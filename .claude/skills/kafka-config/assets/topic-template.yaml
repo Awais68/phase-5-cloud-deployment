@@ -1,0 +1,16 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: {{ topic_name }}
+  labels:
+    strimzi.io/cluster: {{ cluster_name }}
+spec:
+  partitions: {{ partitions }}
+  replicas: {{ replicas }}
+  config:
+    retention.ms: {{ retention_ms }}
+    min.insync.replicas: {{ min_insync_replicas }}
+    compression.type: gzip
+    cleanup.policy: delete
+    max.message.bytes: 1048576
+    segment.ms: 3600000

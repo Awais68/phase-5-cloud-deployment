@@ -1,0 +1,43 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaUser
+metadata:
+  name: {{ user_name }}
+  labels:
+    strimzi.io/cluster: {{ cluster_name }}
+spec:
+  authentication:
+    type: {{ auth_type }}  # tls or scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      # Read access
+      - resource:
+          type: topic
+          name: {{ topic_name }}
+          patternType: literal
+        operation: Read
+        host: "*"
+
+      # Write access
+      - resource:
+          type: topic
+          name: {{ topic_name }}
+          patternType: literal
+        operation: Write
+        host: "*"
+
+      # Describe access
+      - resource:
+          type: topic
+          name: {{ topic_name }}
+          patternType: literal
+        operation: Describe
+        host: "*"
+
+      # Consumer group access
+      - resource:
+          type: group
+          name: {{ consumer_group }}
+          patternType: literal
+        operation: Read
+        host: "*"
