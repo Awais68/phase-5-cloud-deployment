@@ -1,3 +1,6 @@
+
+
+
 apiVersion: v2
 name: todo-app
 description: A cloud-native Todo application with PWA, Voice, and AI capabilities
@@ -29,22 +32,25 @@ annotations:
       image: todo-app/frontend:2.0.0
     - name: backend
       image: todo-app/backend:2.0.0
+
 dependencies:
   - name: postgresql
-    version: "12.x.x"
-    repository: https://charts.bitnami.com/bitnami
+    version: "12.12.10"
+    repository: "https://charts.bitnami.com/bitnami"
     condition: postgresql.enabled
     tags:
       - database
+
   - name: redis
-    version: "17.x.x"
-    repository: https://charts.bitnami.com/bitnami
+    version: "17.15.2"
+    repository: "https://charts.bitnami.com/bitnami"
     condition: redis.enabled
     tags:
       - cache
+
   - name: kafka
-    version: "22.x.x"
-    repository: https://charts.bitnami.com/bitnami
+    version: "22.1.5"
+    repository: "https://charts.bitnami.com/bitnami"
     condition: kafka.enabled
     tags:
       - messaging

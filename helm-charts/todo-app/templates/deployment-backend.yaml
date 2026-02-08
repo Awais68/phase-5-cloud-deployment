@@ -1,0 +1,57 @@
+# templates/deployment-backend.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "todo-evolution.fullname" . }}-backend
+  labels:
+    app: backend
+spec:
+  replicas: {{ .Values.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+      annotations:
+        dapr.io/enabled: {{ .Values.dapr.enabled | quote }}
+        dapr.io/app-id: "backend"
+        dapr.io/app-port: {{ .Values.services.backend.port | quote }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: backend
+        image: {{ .Values.services.backend.image | quote }}
+        imagePullPolicy: {{ .Values.imagePullPolicy | default "IfNotPresent" }}
+        ports:
+        - containerPort: {{ .Values.services.backend.port }}
+        resources: 
+          {{- toYaml .Values.services.backend.resources | nindent 10 }}
+        envFrom:
+          - configMapRef:
+              name: {{ include "todo-evolution.fullname" . }}-backend-config
+          # - secretRef:  # optional, agar secrets chahiye to uncomment
+          #     name: {{ include "todo-evolution.fullname" . }}-backend-secrets
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.services.backend.port }}
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: {{ .Values.services.backend.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        # startupProbe (optional, slow start ke liye add kiya)
+        startupProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.services.backend.port }}
+          failureThreshold: 30
+          periodSeconds: 10

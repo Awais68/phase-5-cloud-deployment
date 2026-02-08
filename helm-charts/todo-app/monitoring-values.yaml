@@ -1,0 +1,174 @@
+# Monitoring Stack Values for Minikube
+# Optimized for local development with reduced resource requirements
+
+# Prometheus + Grafana Stack Configuration
+prometheus:
+  enabled: true
+  prometheusSpec:
+    # Service Monitor selector - set to false to discover all ServiceMonitors
+    serviceMonitorSelectorNilUsesHelmValues: false
+
+    # Retention and storage
+    retention: 7d
+    retentionSize: "10GB"
+
+    # Storage (disable persistence for Minikube to use emptyDir)
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+    # Resource limits for Minikube
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+
+# Grafana Configuration
+grafana:
+  enabled: true
+  adminPassword: admin  # Change in production!
+
+  # Disable persistence for Minikube
+  persistence:
+    enabled: false
+    type: emptyDir
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Data sources
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://kube-prometheus-kube-prome-prometheus:9090
+        access: proxy
+        isDefault: true
+        editable: true
+
+      - name: Loki
+        type: loki
+        url: http://loki:3100
+        access: proxy
+        isDefault: false
+        editable: true
+
+      - name: Jaeger
+        type: jaeger
+        url: http://jaeger-query:16686
+        access: proxy
+        isDefault: false
+        editable: true
+
+  # Dashboard providers
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+      - name: 'default'
+        orgId: 1
+        folder: ''
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/default
+
+# AlertManager Configuration
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+# Node Exporter (metrics from nodes)
+nodeExporter:
+  enabled: true
+
+# Kube State Metrics
+kubeStateMetrics:
+  enabled: true
+
+# Prometheus Operator
+prometheusOperator:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Loki Stack Configuration
+loki:
+  enabled: true
+  persistence:
+    enabled: false  # Use emptyDir for Minikube
+    size: 10Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Promtail (log collector)
+promtail:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Jaeger Configuration
+jaeger:
+  provisionDataStore:
+    cassandra: false
+
+  allInOne:
+    enabled: true
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  storage:
+    type: memory  # Use memory storage for Minikube
+
+  agent:
+    enabled: false
+
+  collector:
+    enabled: false
+
+  query:
+    enabled: false

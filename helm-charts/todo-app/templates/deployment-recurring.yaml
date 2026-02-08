@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "todo-evolution.fullname" . }}-recurring
+  labels:
+    app: recurring
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: recurring
+  template:
+    metadata:
+      labels:
+        app: recurring
+      annotations:
+        dapr.io/enabled: {{ .Values.dapr.enabled | quote }}
+        dapr.io/app-id: "recurring"
+        dapr.io/app-port: {{ .Values.services.recurring.port | quote }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: recurring
+        image: {{ .Values.services.recurring.image }}
+        ports:
+        - containerPort: {{ .Values.services.recurring.port }}
+        resources: {{ .Values.services.recurring.resources | toYaml | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.services.recurring.port }}
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: {{ .Values.services.recurring.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 5

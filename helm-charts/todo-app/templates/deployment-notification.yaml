@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "todo-evolution.fullname" . }}-notification
+  labels:
+    app: notification
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: notification
+  template:
+    metadata:
+      labels:
+        app: notification
+      annotations:
+        dapr.io/enabled: {{ .Values.dapr.enabled | quote }}
+        dapr.io/app-id: "notification"
+        dapr.io/app-port: {{ .Values.services.notification.port | quote }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: notification
+        image: {{ .Values.services.notification.image }}
+        ports:
+        - containerPort: {{ .Values.services.notification.port }}
+        resources: {{ .Values.services.notification.resources | toYaml | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.services.notification.port }}
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: {{ .Values.services.notification.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 5

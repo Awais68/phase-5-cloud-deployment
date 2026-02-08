@@ -1,14 +1,14 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "todo-app.name" -}}
+{{- define "todo-evolution.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Create a default fully qualified app name.
 */}}
-{{- define "todo-app.fullname" -}}
+{{- define "todo-evolution.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -22,40 +22,28 @@ Create a default fully qualified app name.
 {{- end }}
 
 {{/*
-Create chart name and version as used by the chart label.
-*/}}
-{{- define "todo-app.chart" -}}
-{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
-{{- end }}
-
-{{/*
 Common labels
 */}}
-{{- define "todo-app.labels" -}}
-helm.sh/chart: {{ include "todo-app.chart" . }}
-{{ include "todo-app.selectorLabels" . }}
+{{- define "todo-evolution.labels" -}}
+helm.sh/chart: {{ include "todo-evolution.chart" . }}
+{{ include "todo-evolution.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
-environment: {{ .Values.global.environment }}
 {{- end }}
 
 {{/*
 Selector labels
 */}}
-{{- define "todo-app.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "todo-app.name" . }}
+{{- define "todo-evolution.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "todo-evolution.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Create the name of the service account to use
+Create chart name and version as used by the chart label.
 */}}
-{{- define "todo-app.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create }}
-{{- default (include "todo-app.fullname" .) .Values.serviceAccount.name }}
-{{- else }}
-{{- default "default" .Values.serviceAccount.name }}
-{{- end }}
+{{- define "todo-evolution.chart" -}}
+{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}

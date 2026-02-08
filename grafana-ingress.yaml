@@ -1,0 +1,22 @@
+# file: grafana-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: monitoring
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"   # local testing ke liye
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: grafana.local    # ya jo bhi host chahte ho (minikube ke liye .local use karo)
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: monitoring-grafana
+            port:
+              number: 80

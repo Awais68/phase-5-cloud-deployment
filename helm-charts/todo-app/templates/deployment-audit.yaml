@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "todo-evolution.fullname" . }}-audit
+  labels:
+    app: audit
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: audit
+  template:
+    metadata:
+      labels:
+        app: audit
+      annotations:
+        dapr.io/enabled: {{ .Values.dapr.enabled | quote }}
+        dapr.io/app-id: "audit"
+        dapr.io/app-port: {{ .Values.services.audit.port | quote }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: audit
+        image: {{ .Values.services.audit.image }}
+        ports:
+        - containerPort: {{ .Values.services.audit.port }}
+        resources: {{ .Values.services.audit.resources | toYaml | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.services.audit.port }}
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: {{ .Values.services.audit.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 5

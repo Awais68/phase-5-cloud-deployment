@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "todo-evolution.fullname" . }}-backend
+spec:
+  type: {{ .Values.services.backend.type }}
+  ports:
+  - port: {{ .Values.services.backend.port }}
+    targetPort: {{ .Values.services.backend.port }}
+    name: http
+  selector:
+    app: backend

@@ -1,0 +1,17 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: kafka-pubsub     # Yeh name apps mein use karoge (daprClient.PubSub("kafka-pubsub"))
+  namespace: default     # Ya apne app namespace mein daalo
+spec:
+  type: pubsub.kafka
+  version: v1
+  metadata:
+  - name: brokers
+    value: my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092   # Kafka bootstrap service (internal DNS)
+  - name: consumerGroup
+    value: mygroup         # Optional, default random hota hai
+  - name: authType
+    value: none            # No auth (plain listener), agar TLS chahiye to change karo
+  - name: maxMessageBytes
+    value: 1024

@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "todo-evolution.fullname" . }}-frontend
+  labels:
+    app: frontend
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+      annotations:
+        dapr.io/enabled: {{ .Values.dapr.enabled | quote }}
+        dapr.io/app-id: "frontend"
+        dapr.io/app-port: {{ .Values.services.frontend.port | quote }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: frontend
+        image: {{ .Values.services.frontend.image }}
+        ports:
+        - containerPort: {{ .Values.services.frontend.port }}
+        resources: {{ .Values.services.frontend.resources | toYaml | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.services.frontend.port }}
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: {{ .Values.services.frontend.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 5

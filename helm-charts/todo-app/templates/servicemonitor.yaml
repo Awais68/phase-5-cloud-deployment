@@ -1,0 +1,96 @@
+{{- if .Values.monitoring.enabled -}}
+# ServiceMonitor for Frontend
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "todo-evolution.fullname" . }}-frontend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: frontend
+    {{- include "todo-evolution.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  endpoints:
+  - port: http
+    interval: 30s
+    path: /metrics
+    scheme: http
+---
+# ServiceMonitor for Backend
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "todo-evolution.fullname" . }}-backend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: backend
+    {{- include "todo-evolution.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: backend
+  endpoints:
+  - port: http
+    interval: 30s
+    path: /metrics
+    scheme: http
+---
+# ServiceMonitor for Notification Service
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "todo-evolution.fullname" . }}-notification
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: notification
+    {{- include "todo-evolution.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: notification
+  endpoints:
+  - port: http
+    interval: 30s
+    path: /metrics
+    scheme: http
+---
+# ServiceMonitor for Recurring Task Service
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "todo-evolution.fullname" . }}-recurring
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: recurring
+    {{- include "todo-evolution.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: recurring
+  endpoints:
+  - port: http
+    interval: 30s
+    path: /metrics
+    scheme: http
+---
+# ServiceMonitor for Audit Log Service
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "todo-evolution.fullname" . }}-audit
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: audit
+    {{- include "todo-evolution.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: audit
+  endpoints:
+  - port: http
+    interval: 30s
+    path: /metrics
+    scheme: http
+{{- end }}
