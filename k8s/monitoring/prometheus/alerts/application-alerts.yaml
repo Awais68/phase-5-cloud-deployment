@@ -1,0 +1,399 @@
+# Application-Level Prometheus Alert Rules
+# Monitors application health, performance, and business metrics
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: todo-app-application-alerts
+  namespace: monitoring
+  labels:
+    app: todo-app
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+
+  # ==========================================
+  # HTTP Service Health Alerts
+  # ==========================================
+  - name: http-service-health
+    interval: 30s
+    rules:
+
+    # High Error Rate Alert
+    - alert: HighErrorRate
+      expr: |
+        (
+          sum(rate(http_requests_total{status=~"5.."}[5m])) by (service, endpoint)
+          /
+          sum(rate(http_requests_total[5m])) by (service, endpoint)
+        ) > 0.05
+      for: 5m
+      labels:
+        severity: critical
+        component: backend
+        alert_type: availability
+      annotations:
+        summary: "High error rate in {{ $labels.service }} ({{ $value | humanizePercentage }})"
+        description: |
+          Service {{ $labels.service }} endpoint {{ $labels.endpoint }} has an error rate of {{ $value | humanizePercentage }} over the last 5 minutes.
+          This exceeds the 5% threshold and indicates a critical service degradation.
+
+          Current error rate: {{ $value | humanizePercentage }}
+          Service: {{ $labels.service }}
+          Endpoint: {{ $labels.endpoint }}
+
+          Runbook: https://docs.internal/runbooks/high-error-rate
+        dashboard: "https://grafana.local/d/app-overview"
+        runbook_url: "https://docs.internal/runbooks/high-error-rate"
+
+    # High Latency Alert (P95)
+    - alert: HighLatencyP95
+      expr: |
+        histogram_quantile(0.95,
+          sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service, endpoint)
+        ) > 0.5
+      for: 10m
+      labels:
+        severity: warning
+        component: backend
+        alert_type: performance
+      annotations:
+        summary: "High latency (P95) in {{ $labels.service }}: {{ $value }}s"
+        description: |
+          Service {{ $labels.service }} endpoint {{ $labels.endpoint }} has P95 latency of {{ $value | humanizeDuration }} over the last 10 minutes.
+          This exceeds the 500ms SLO and may impact user experience.
+
+          Current P95 latency: {{ $value | humanizeDuration }}
+          Service: {{ $labels.service }}
+          Endpoint: {{ $labels.endpoint }}
+
+          Runbook: https://docs.internal/runbooks/high-latency
+        dashboard: "https://grafana.local/d/app-overview"
+        runbook_url: "https://docs.internal/runbooks/high-latency"
+
+    # High Latency Alert (P99)
+    - alert: HighLatencyP99
+      expr: |
+        histogram_quantile(0.99,
+          sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service, endpoint)
+        ) > 1.0
+      for: 10m
+      labels:
+        severity: warning
+        component: backend
+        alert_type: performance
+      annotations:
+        summary: "High latency (P99) in {{ $labels.service }}: {{ $value }}s"
+        description: |
+          Service {{ $labels.service }} endpoint {{ $labels.endpoint }} has P99 latency of {{ $value | humanizeDuration }}.
+
+          Current P99 latency: {{ $value | humanizeDuration }}
+          Service: {{ $labels.service }}
+          Endpoint: {{ $labels.endpoint }}
+
+    # Service Unavailable
+    - alert: ServiceUnavailable
+      expr: |
+        up{job=~".*backend.*|.*notification.*|.*recurring-task.*|.*audit-log.*"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: backend
+        alert_type: availability
+      annotations:
+        summary: "Service {{ $labels.job }} is unavailable"
+        description: |
+          Service {{ $labels.job }} has been unavailable for 2 minutes.
+
+          Job: {{ $labels.job }}
+          Instance: {{ $labels.instance }}
+
+          Immediate action required!
+
+          Runbook: https://docs.internal/runbooks/service-down
+        runbook_url: "https://docs.internal/runbooks/service-down"
+
+    # Low Request Rate (possible service issue)
+    - alert: LowRequestRate
+      expr: |
+        sum(rate(http_requests_total[5m])) by (service) < 0.1
+      for: 15m
+      labels:
+        severity: warning
+        component: backend
+        alert_type: traffic
+      annotations:
+        summary: "Low request rate in {{ $labels.service }}"
+        description: |
+          Service {{ $labels.service }} is receiving very low traffic ({{ $value }} req/s).
+          This may indicate a routing issue or service degradation.
+
+          Current rate: {{ $value }} req/s
+          Service: {{ $labels.service }}
+
+  # ==========================================
+  # Database Performance Alerts
+  # ==========================================
+  - name: database-performance
+    interval: 30s
+    rules:
+
+    # High Database Operation Latency
+    - alert: HighDatabaseLatency
+      expr: |
+        histogram_quantile(0.95,
+          sum(rate(db_operation_duration_seconds_bucket[5m])) by (le, service, operation)
+        ) > 0.1
+      for: 10m
+      labels:
+        severity: warning
+        component: database
+        alert_type: performance
+      annotations:
+        summary: "High database latency in {{ $labels.service }}: {{ $value }}s"
+        description: |
+          Database operations in {{ $labels.service }} are experiencing high latency.
+
+          P95 latency: {{ $value | humanizeDuration }}
+          Service: {{ $labels.service }}
+          Operation: {{ $labels.operation }}
+
+          Check database connection pool, slow queries, and resource utilization.
+
+    # High Database Error Rate
+    - alert: HighDatabaseErrorRate
+      expr: |
+        (
+          sum(rate(db_operations_total{status="error"}[5m])) by (service)
+          /
+          sum(rate(db_operations_total[5m])) by (service)
+        ) > 0.01
+      for: 5m
+      labels:
+        severity: critical
+        component: database
+        alert_type: availability
+      annotations:
+        summary: "High database error rate in {{ $labels.service }}: {{ $value | humanizePercentage }}"
+        description: |
+          Service {{ $labels.service }} is experiencing database errors at a rate of {{ $value | humanizePercentage }}.
+
+          Check database connectivity, resource limits, and error logs.
+
+    # Database Connection Pool Exhaustion
+    - alert: DatabaseConnectionPoolExhaustion
+      expr: |
+        (
+          db_connection_pool_active
+          /
+          db_connection_pool_max
+        ) > 0.9
+      for: 5m
+      labels:
+        severity: warning
+        component: database
+        alert_type: saturation
+      annotations:
+        summary: "Database connection pool near exhaustion in {{ $labels.service }}"
+        description: |
+          Service {{ $labels.service }} has {{ $value | humanizePercentage }} of database connections in use.
+
+          Active connections: {{ $labels.active }}
+          Max connections: {{ $labels.max }}
+
+          Consider increasing pool size or investigating connection leaks.
+
+  # ==========================================
+  # Business Logic Alerts
+  # ==========================================
+  - name: business-logic
+    interval: 30s
+    rules:
+
+    # Task Creation Failures
+    - alert: HighTaskCreationFailureRate
+      expr: |
+        (
+          sum(rate(task_operations_total{operation="create",status="error"}[5m]))
+          /
+          sum(rate(task_operations_total{operation="create"}[5m]))
+        ) > 0.05
+      for: 5m
+      labels:
+        severity: warning
+        component: backend
+        alert_type: business
+      annotations:
+        summary: "High task creation failure rate: {{ $value | humanizePercentage }}"
+        description: |
+          Task creation is failing at a rate of {{ $value | humanizePercentage }}.
+
+          This may indicate database issues, validation errors, or service degradation.
+
+          Check application logs and database status.
+
+    # Notification Delivery Failures
+    - alert: HighNotificationFailureRate
+      expr: |
+        (
+          sum(rate(notifications_sent_total{status="failed"}[5m])) by (channel)
+          /
+          sum(rate(notifications_sent_total[5m])) by (channel)
+        ) > 0.1
+      for: 5m
+      labels:
+        severity: warning
+        component: notification
+        alert_type: business
+      annotations:
+        summary: "High notification failure rate on {{ $labels.channel }}: {{ $value | humanizePercentage }}"
+        description: |
+          Notification delivery via {{ $labels.channel }} is failing at {{ $value | humanizePercentage }}.
+
+          Channel: {{ $labels.channel }}
+
+          Check external service connectivity and credentials.
+
+    # Recurring Task Generation Lag
+    - alert: RecurringTaskGenerationLag
+      expr: |
+        recurring_task_generation_lag_seconds > 300
+      for: 10m
+      labels:
+        severity: warning
+        component: recurring-task
+        alert_type: business
+      annotations:
+        summary: "Recurring task generation is lagging by {{ $value }}s"
+        description: |
+          The recurring task service is {{ $value | humanizeDuration }} behind schedule.
+
+          This may result in delayed task creation for users.
+
+          Check service health and processing capacity.
+
+    # Audit Log Write Failures
+    - alert: HighAuditLogFailureRate
+      expr: |
+        (
+          sum(rate(audit_log_writes_total{status="error"}[5m]))
+          /
+          sum(rate(audit_log_writes_total[5m]))
+        ) > 0.01
+      for: 5m
+      labels:
+        severity: critical
+        component: audit-log
+        alert_type: compliance
+      annotations:
+        summary: "High audit log write failure rate: {{ $value | humanizePercentage }}"
+        description: |
+          Audit logging is failing at {{ $value | humanizePercentage }}.
+
+          This is a CRITICAL compliance issue - audit logs must be reliable.
+
+          Immediate investigation required.
+
+          Runbook: https://docs.internal/runbooks/audit-log-failure
+
+  # ==========================================
+  # Authentication & Authorization Alerts
+  # ==========================================
+  - name: auth-alerts
+    interval: 30s
+    rules:
+
+    # High Authentication Failure Rate
+    - alert: HighAuthenticationFailureRate
+      expr: |
+        (
+          sum(rate(http_requests_total{endpoint=~".*/auth/.*",status=~"401|403"}[5m]))
+          /
+          sum(rate(http_requests_total{endpoint=~".*/auth/.*"}[5m]))
+        ) > 0.2
+      for: 5m
+      labels:
+        severity: warning
+        component: backend
+        alert_type: security
+      annotations:
+        summary: "High authentication failure rate: {{ $value | humanizePercentage }}"
+        description: |
+          Authentication requests are failing at {{ $value | humanizePercentage }}.
+
+          This may indicate:
+          - Brute force attack attempt
+          - Client configuration issues
+          - Service authentication problems
+
+          Review security logs and user activity.
+
+    # Spike in Authentication Attempts
+    - alert: AuthenticationAttemptSpike
+      expr: |
+        sum(rate(http_requests_total{endpoint=~".*/auth/.*"}[5m]))
+        >
+        sum(rate(http_requests_total{endpoint=~".*/auth/.*"}[5m] offset 1h)) * 3
+      for: 5m
+      labels:
+        severity: warning
+        component: backend
+        alert_type: security
+      annotations:
+        summary: "Authentication attempt spike detected"
+        description: |
+          Authentication attempts have increased 3x compared to 1 hour ago.
+
+          Current rate: {{ $value }} req/s
+
+          Investigate for potential security incidents.
+
+  # ==========================================
+  # SLO Burn Rate Alerts
+  # ==========================================
+  - name: slo-alerts
+    interval: 30s
+    rules:
+
+    # Fast Error Budget Burn (1 hour window)
+    - alert: FastErrorBudgetBurn
+      expr: |
+        (
+          sum(rate(http_requests_total{status=~"5.."}[1h]))
+          /
+          sum(rate(http_requests_total[1h]))
+        ) > (0.001 * 14.4)
+      for: 2m
+      labels:
+        severity: critical
+        component: backend
+        alert_type: slo
+      annotations:
+        summary: "Fast error budget burn detected"
+        description: |
+          Error budget is burning at 14.4x the acceptable rate.
+          At this rate, the entire monthly error budget will be exhausted in less than 2 days.
+
+          Immediate action required to reduce error rate.
+
+    # Slow Error Budget Burn (6 hour window)
+    - alert: SlowErrorBudgetBurn
+      expr: |
+        (
+          sum(rate(http_requests_total{status=~"5.."}[6h]))
+          /
+          sum(rate(http_requests_total[6h]))
+        ) > (0.001 * 6)
+      for: 15m
+      labels:
+        severity: warning
+        component: backend
+        alert_type: slo
+      annotations:
+        summary: "Slow error budget burn detected"
+        description: |
+          Error budget is burning at 6x the acceptable rate.
+          At this rate, the monthly error budget will be exhausted in 5 days.
+
+          Investigation and remediation recommended.

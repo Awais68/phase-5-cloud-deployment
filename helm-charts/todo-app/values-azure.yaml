@@ -1,0 +1,196 @@
+# Azure AKS Production Values for Todo App
+# Usage: helm install todo-app . -f values-azure.yaml --namespace todo-app
+
+# Global Azure Configuration
+global:
+  # Azure Container Registry (ACR) - Update with your ACR name
+  registry: "${ACR_NAME}.azurecr.io"
+
+  # Kafka configuration (Azure Event Hubs with Kafka protocol)
+  kafka:
+    bootstrap: "${EVENTHUB_NAMESPACE}.servicebus.windows.net:9093"
+    pubsub: "kafka-pubsub"
+    sasl:
+      enabled: true
+      mechanism: "PLAIN"
+      username: "$ConnectionString"
+      # Password should be Event Hubs connection string
+
+  # Ingress configuration
+  ingress:
+    enabled: true
+    className: "nginx"  # Or "azure/application-gateway" for AGIC
+    annotations:
+      kubernetes.io/ingress.class: nginx
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    hosts:
+      app: "todo-app.${AZURE_DNS_ZONE}"
+      api: "api.todo-app.${AZURE_DNS_ZONE}"
+    tls:
+      - secretName: todo-app-tls
+        hosts:
+          - "todo-app.${AZURE_DNS_ZONE}"
+          - "api.todo-app.${AZURE_DNS_ZONE}"
+
+# Replica configuration for production
+replicaCount: 3
+
+# Image pull secrets for ACR
+imagePullSecrets:
+  - name: acr-secret
+
+# Image pull policy
+imagePullPolicy: Always
+
+# Service configurations
+services:
+  frontend:
+    type: ClusterIP
+    port: 3000
+    image: "${ACR_NAME}.azurecr.io/todo-frontend:${IMAGE_TAG}"
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "256Mi"
+      limits:
+        cpu: "1000m"
+        memory: "512Mi"
+
+  backend:
+    type: ClusterIP
+    port: 8000
+    image: "${ACR_NAME}.azurecr.io/todo-backend:${IMAGE_TAG}"
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "2000m"
+        memory: "2Gi"
+    env:
+      - name: DATABASE_URL
+        valueFrom:
+          secretKeyRef:
+            name: azure-secrets
+            key: database-url
+      - name: REDIS_URL
+        valueFrom:
+          secretKeyRef:
+            name: azure-secrets
+            key: redis-url
+
+  notification:
+    type: ClusterIP
+    port: 8003
+    image: "${ACR_NAME}.azurecr.io/notification-service:${IMAGE_TAG}"
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "256Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+
+  recurring:
+    type: ClusterIP
+    port: 8002
+    image: "${ACR_NAME}.azurecr.io/recurring-task-service:${IMAGE_TAG}"
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "256Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+
+  audit:
+    type: ClusterIP
+    port: 8004
+    image: "${ACR_NAME}.azurecr.io/audit-log-service:${IMAGE_TAG}"
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "256Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+
+# Dapr configuration
+dapr:
+  enabled: true
+
+# Autoscaling configuration
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Monitoring configuration
+monitoring:
+  enabled: true
+  # Azure Monitor / Application Insights
+  applicationInsights:
+    enabled: true
+    instrumentationKey: "${APPINSIGHTS_INSTRUMENTATIONKEY}"
+
+# Use Azure managed services instead of in-cluster
+postgresql:
+  enabled: false  # Use Azure Database for PostgreSQL
+
+redis:
+  enabled: false  # Use Azure Cache for Redis
+
+kafka:
+  enabled: false  # Use Azure Event Hubs with Kafka protocol
+
+# Azure-specific annotations for pods
+podAnnotations:
+  azure.workload.identity/use: "true"
+
+# Azure-specific service annotations
+serviceAnnotations:
+  service.beta.kubernetes.io/azure-load-balancer-internal: "false"
+
+# Storage class for Azure
+storageClass: managed-premium
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# Network Policy
+networkPolicy:
+  enabled: true
+
+# Security Context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# Node selector for Azure node pools
+nodeSelector:
+  kubernetes.io/os: linux
+
+# Tolerations for Azure spot instances (optional)
+tolerations: []
+
+# Affinity rules for high availability
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - frontend
+                  - backend
+          topologyKey: topology.kubernetes.io/zone

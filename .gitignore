@@ -65,3 +65,17 @@ node_modules/
 
 # Large binaries
 minikube-linux-amd64
+
+# CI/CD sensitive files
+*.kubeconfig
+*.b64
+staging-values.yaml
+production-values.yaml
+kubeconfig
+kubeconfig.yaml
+*.pem
+*.key
+*.crt
+*kubeconfig*.yaml
+staging-kubeconfig*
+production-kubeconfig*

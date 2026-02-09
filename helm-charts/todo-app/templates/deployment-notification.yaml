@@ -25,6 +25,7 @@ spec:
       containers:
       - name: notification
         image: {{ .Values.services.notification.image }}
+        imagePullPolicy: {{ .Values.imagePullPolicy | default "IfNotPresent" }}
         ports:
         - containerPort: {{ .Values.services.notification.port }}
         resources: {{ .Values.services.notification.resources | toYaml | nindent 10 }}

@@ -1,0 +1,156 @@
+# Azure Ingress Configuration
+# Option 1: NGINX Ingress Controller with Azure Load Balancer
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: todo-app-ingress
+  namespace: production
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, PUT, POST, DELETE, PATCH, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization"
+    # TLS with cert-manager
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # Rate limiting
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - todo-app.${AZURE_DNS_ZONE}
+        - api.todo-app.${AZURE_DNS_ZONE}
+      secretName: todo-app-tls
+  rules:
+    - host: todo-app.${AZURE_DNS_ZONE}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: todo-app-frontend
+                port:
+                  number: 3000
+    - host: api.todo-app.${AZURE_DNS_ZONE}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: todo-app-backend
+                port:
+                  number: 8000
+---
+# Option 2: Azure Application Gateway Ingress Controller (AGIC)
+# Uncomment to use AGIC instead of NGINX
+#
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: todo-app-ingress-agic
+#   namespace: production
+#   annotations:
+#     kubernetes.io/ingress.class: azure/application-gateway
+#     appgw.ingress.kubernetes.io/ssl-redirect: "true"
+#     appgw.ingress.kubernetes.io/backend-protocol: "http"
+#     appgw.ingress.kubernetes.io/request-timeout: "300"
+#     appgw.ingress.kubernetes.io/connection-draining: "true"
+#     appgw.ingress.kubernetes.io/connection-draining-timeout: "30"
+#     appgw.ingress.kubernetes.io/cookie-based-affinity: "false"
+#     # WAF Policy (if using WAF_v2 SKU)
+#     appgw.ingress.kubernetes.io/waf-policy-for-path: "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Network/applicationGatewayWebApplicationFirewallPolicies/${WAF_POLICY_NAME}"
+# spec:
+#   ingressClassName: azure-application-gateway
+#   tls:
+#     - hosts:
+#         - todo-app.${AZURE_DNS_ZONE}
+#         - api.todo-app.${AZURE_DNS_ZONE}
+#       secretName: todo-app-tls
+#   rules:
+#     - host: todo-app.${AZURE_DNS_ZONE}
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: todo-app-frontend
+#                 port:
+#                   number: 3000
+#     - host: api.todo-app.${AZURE_DNS_ZONE}
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: todo-app-backend
+#                 port:
+#                   number: 8000
+---
+# Network Policy for Azure CNI
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: todo-app-network-policy
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: todo-app
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow ingress from nginx-ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3000
+        - protocol: TCP
+          port: 8000
+    # Allow internal pod-to-pod communication
+    - from:
+        - podSelector:
+            matchLabels:
+              app: todo-app
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow outbound to Azure services
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 5432  # PostgreSQL
+        - protocol: TCP
+          port: 6380  # Redis
+        - protocol: TCP
+          port: 9093  # Event Hubs Kafka

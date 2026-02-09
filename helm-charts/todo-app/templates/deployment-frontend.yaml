@@ -24,6 +24,7 @@ spec:
       containers:
       - name: frontend
         image: {{ .Values.services.frontend.image }}
+        imagePullPolicy: {{ .Values.imagePullPolicy | default "IfNotPresent" }}
         ports:
         - containerPort: {{ .Values.services.frontend.port }}
         resources: {{ .Values.services.frontend.resources | toYaml | nindent 10 }}

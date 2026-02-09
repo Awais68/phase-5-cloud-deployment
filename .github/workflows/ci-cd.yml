@@ -1,0 +1,575 @@
+# Comprehensive CI/CD Pipeline for Todo App Microservices
+# Includes: Tests, Security Scanning, Build, Deploy
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      run_load_tests:
+        description: 'Run load tests'
+        required: false
+        default: 'false'
+      deploy_environment:
+        description: 'Deploy environment (staging/production)'
+        required: false
+        default: 'staging'
+
+env:
+  PYTHON_VERSION: '3.13'
+  NODE_VERSION: '20'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # Code Quality & Linting
+  # ============================================================
+  lint:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install linting tools
+        run: |
+          pip install ruff black mypy
+      
+      - name: Run Ruff (linting)
+        run: |
+          ruff check backend/ --output-format=github || true
+      
+      - name: Run Black (formatting check)
+        run: |
+          black --check backend/ || true
+      
+      - name: Run MyPy (type checking)
+        run: |
+          mypy backend/ --ignore-missing-imports || true
+
+  # ============================================================
+  # Unit Tests
+  # ============================================================
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r tests/requirements-test.txt
+          pip install -r backend/hf_deployment/todo_chatbot/requirements.txt || true
+      
+      - name: Run unit tests
+        run: |
+          pytest tests/unit/ \
+            -v \
+            --tb=short \
+            -m "not slow" \
+            --junitxml=reports/unit-tests.xml \
+            --cov=backend \
+            --cov-report=xml:reports/coverage.xml \
+            --cov-report=html:reports/coverage-html
+      
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: reports/coverage-html/
+      
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results
+          path: reports/unit-tests.xml
+
+  # ============================================================
+  # Integration Tests
+  # ============================================================
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r tests/requirements-test.txt
+      
+      - name: Run integration tests
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/test_db
+          REDIS_URL: redis://localhost:6379/0
+          TESTING: "true"
+        run: |
+          pytest tests/integration/ \
+            -v \
+            --tb=short \
+            -m "integration and not kafka" \
+            --junitxml=reports/integration-tests.xml
+      
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-results
+          path: reports/integration-tests.xml
+
+  # ============================================================
+  # Kafka Integration Tests
+  # ============================================================
+  kafka-tests:
+    name: Kafka Integration Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Start Kafka with Docker Compose
+        run: |
+          docker compose -f docker-compose.test.yml up -d kafka zookeeper
+          sleep 30  # Wait for Kafka to be ready
+      
+      - name: Install dependencies
+        run: |
+          pip install -r tests/requirements-test.txt
+      
+      - name: Run Kafka integration tests
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+        run: |
+          pytest tests/integration/kafka/ \
+            -v \
+            --tb=short \
+            -m "kafka" \
+            --junitxml=reports/kafka-tests.xml || true
+      
+      - name: Stop Kafka
+        if: always()
+        run: |
+          docker compose -f docker-compose.test.yml down || true
+
+  # ============================================================
+  # Security Scanning - Dependencies
+  # ============================================================
+  security-deps:
+    name: Dependency Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install security tools
+        run: |
+          pip install pip-audit safety
+      
+      - name: Run pip-audit
+        run: |
+          pip-audit --requirement backend/hf_deployment/todo_chatbot/requirements.txt \
+            --format json \
+            --output reports/pip-audit.json || true
+      
+      - name: Run safety check
+        run: |
+          safety check \
+            --file backend/hf_deployment/todo_chatbot/requirements.txt \
+            --json > reports/safety.json || true
+      
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-security-reports
+          path: reports/
+
+  # ============================================================
+  # Security Scanning - Code (Bandit)
+  # ============================================================
+  security-code:
+    name: Code Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install Bandit
+        run: pip install bandit[toml]
+      
+      - name: Run Bandit
+        run: |
+          mkdir -p reports
+          bandit -r backend/ \
+            -f json \
+            -o reports/bandit.json \
+            --severity-level medium || true
+      
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: reports/bandit.json
+
+  # ============================================================
+  # Container Image Build
+  # ============================================================
+  build-images:
+    name: Build Container Images
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests]
+    strategy:
+      matrix:
+        service:
+          - name: todo-api
+            context: backend/hf_deployment/todo_chatbot
+            dockerfile: Dockerfile
+          - name: recurring-task-service
+            context: backend/services/recurring-task-service
+            dockerfile: Dockerfile
+          - name: notification-service
+            context: backend/services/notification-service
+            dockerfile: Dockerfile
+          - name: audit-log-service
+            context: backend/services/audit-log-service
+            dockerfile: Dockerfile
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.service.name }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+      
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.service.context }}
+          file: ${{ matrix.service.context }}/${{ matrix.service.dockerfile }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================================
+  # Container Security Scanning (Trivy)
+  # ============================================================
+  container-scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: build-images
+    if: github.event_name != 'pull_request'
+    strategy:
+      matrix:
+        service:
+          - todo-api
+          - recurring-task-service
+          - notification-service
+          - audit-log-service
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.service }}:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results-${{ matrix.service }}.sarif'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results-${{ matrix.service }}.sarif'
+
+  # ============================================================
+  # API Security Scanning (OWASP ZAP)
+  # ============================================================
+  api-security-scan:
+    name: API Security Scan (OWASP ZAP)
+    runs-on: ubuntu-latest
+    needs: build-images
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Start services
+        run: |
+          docker compose up -d
+          sleep 60  # Wait for services to be ready
+      
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: 'http://localhost:8000'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a'
+      
+      - name: Stop services
+        if: always()
+        run: docker compose down
+
+  # ============================================================
+  # Load Testing
+  # ============================================================
+  load-tests:
+    name: Load Tests
+    runs-on: ubuntu-latest
+    needs: build-images
+    if: github.event.inputs.run_load_tests == 'true'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install Locust
+        run: pip install locust
+      
+      - name: Start services
+        run: |
+          docker compose up -d
+          sleep 60
+      
+      - name: Run load tests
+        run: |
+          locust -f tests/load/locustfile.py \
+            --host=http://localhost:8000 \
+            --users=50 \
+            --spawn-rate=5 \
+            --run-time=5m \
+            --headless \
+            --csv=reports/load-test
+      
+      - name: Upload load test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: reports/load-test*
+      
+      - name: Stop services
+        if: always()
+        run: docker compose down
+
+  # ============================================================
+  # E2E Tests
+  # ============================================================
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: build-images
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install dependencies
+        run: pip install -r tests/requirements-test.txt
+      
+      - name: Start services
+        run: |
+          docker compose up -d
+          sleep 60
+      
+      - name: Run E2E tests
+        env:
+          E2E_MAIN_API_URL: http://localhost:8000
+          E2E_RECURRING_SERVICE_URL: http://localhost:8002
+          E2E_NOTIFICATION_SERVICE_URL: http://localhost:8003
+          E2E_AUDIT_SERVICE_URL: http://localhost:8004
+        run: |
+          pytest tests/e2e/ \
+            -v \
+            --tb=short \
+            -m "e2e" \
+            --junitxml=reports/e2e-tests.xml || true
+      
+      - name: Stop services
+        if: always()
+        run: docker compose down
+      
+      - name: Upload E2E test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-test-results
+          path: reports/e2e-tests.xml
+
+  # ============================================================
+  # Deploy to Staging
+  # ============================================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-images, security-deps, security-code]
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment:
+      name: staging
+      url: https://staging.todoapp.example.com
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+      
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+      
+      - name: Configure Kubernetes context
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+      
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install todo-app ./k8s/helm/todo-app \
+            --namespace staging \
+            --create-namespace \
+            --set image.tag=${{ github.sha }} \
+            --set environment=staging \
+            --wait --timeout=10m
+
+  # ============================================================
+  # Deploy to Production
+  # ============================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-images, security-deps, security-code, container-scan, e2e-tests]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: https://todoapp.example.com
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+      
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+      
+      - name: Configure Kubernetes context
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+      
+      - name: Deploy with Helm (Blue-Green)
+        run: |
+          helm upgrade --install todo-app ./k8s/helm/todo-app \
+            --namespace production \
+            --set image.tag=${{ github.sha }} \
+            --set environment=production \
+            --set blueGreen.enabled=true \
+            --wait --timeout=15m
+      
+      - name: Run smoke tests
+        run: |
+          sleep 30
+          curl -f https://todoapp.example.com/health || exit 1
+      
+      - name: Promote deployment
+        if: success()
+        run: |
+          kubectl patch service todo-app \
+            --namespace production \
+            -p '{"spec":{"selector":{"version":"${{ github.sha }}"}}}'

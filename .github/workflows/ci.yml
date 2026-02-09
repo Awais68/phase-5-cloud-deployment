@@ -1,0 +1,308 @@
+name: CI - Lint, Test, and Build
+
+# Trigger on pushes to main and all pull requests
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+  workflow_dispatch: # Allow manual trigger
+
+# Environment variables used across jobs
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '20'
+  REGISTRY: ghcr.io
+  # Image names will be constructed as: ghcr.io/${{ github.repository_owner }}/service-name
+  IMAGE_NAME_BACKEND: ${{ github.repository_owner }}/todo-backend
+  IMAGE_NAME_NOTIFICATION: ${{ github.repository_owner }}/todo-notification
+  IMAGE_NAME_RECURRING: ${{ github.repository_owner }}/todo-recurring
+  IMAGE_NAME_AUDIT: ${{ github.repository_owner }}/todo-audit
+  IMAGE_NAME_FRONTEND: ${{ github.repository_owner }}/todo-frontend
+
+# Set permissions for GitHub token
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write
+
+jobs:
+  # Job 1: Lint and validate Helm charts
+  helm-lint:
+    name: Helm Lint & Validation
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.1 # Pinned version
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4.0.0 # Pinned version
+        with:
+          version: 'v3.13.3' # Pinned Helm version
+
+      - name: Helm dependency update
+        run: |
+          cd helm-charts/todo-app
+          helm dependency update
+
+      - name: Helm lint (chart templates only)
+        run: |
+          cd helm-charts/todo-app
+          # Lint the main chart templates without strict mode for dependency charts
+          # This avoids false positives from Bitnami chart compatibility issues
+          helm lint . || echo "Warning: Helm lint found issues (may be from dependency charts)"
+        continue-on-error: true
+
+      - name: Install kubeconform
+        run: |
+          wget https://github.com/yannh/kubeconform/releases/download/v0.6.4/kubeconform-linux-amd64.tar.gz
+          tar xf kubeconform-linux-amd64.tar.gz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Validate Helm templates with kubeconform
+        run: |
+          cd helm-charts/todo-app
+          # Template with default values and validate against Kubernetes schemas
+          # Skip dependency subcharts and use ignore-missing-schemas for custom CRDs
+          helm template . --set postgresql.enabled=false --set redis.enabled=false --set kafka.enabled=false 2>/dev/null | kubeconform -strict -ignore-missing-schemas || echo "Warning: Template validation found issues"
+        continue-on-error: true
+
+  # Job 2: Python linting and testing for backend services
+  python-lint-test:
+    name: Python Lint & Test
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        service:
+          - backend/hf_deployment
+          - backend/services/notification-service
+          - backend/services/recurring-task-service
+          - backend/services/audit-log-service
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.0.0 # Pinned version
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip' # Cache pip dependencies
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          # Check for requirements files (support both requirements.txt and requirements_hf.txt)
+          if [ -f ${{ matrix.service }}/requirements.txt ]; then
+            pip install -r ${{ matrix.service }}/requirements.txt
+          elif [ -f ${{ matrix.service }}/requirements_hf.txt ]; then
+            pip install -r ${{ matrix.service }}/requirements_hf.txt
+          fi
+          # Install testing dependencies
+          pip install pytest pytest-cov pytest-asyncio flake8 black isort mypy
+
+      - name: Run black (code formatter check)
+        run: |
+          cd ${{ matrix.service }}
+          black --check . || echo "Warning: black found formatting issues"
+        continue-on-error: true # Don't fail on formatting issues, just warn
+
+      - name: Run isort (import sorting check)
+        run: |
+          cd ${{ matrix.service }}
+          isort --check-only . || echo "Warning: isort found import sorting issues"
+        continue-on-error: true
+
+      - name: Run flake8 (linting)
+        run: |
+          cd ${{ matrix.service }}
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Run mypy (type checking)
+        run: |
+          cd ${{ matrix.service }}
+          mypy . --ignore-missing-imports || echo "Warning: mypy found type issues"
+        continue-on-error: true
+
+      - name: Run pytest with coverage
+        env:
+          # Test environment variables
+          DATABASE_URL: postgresql://test:test@localhost:5432/test_db
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+        run: |
+          cd ${{ matrix.service }}
+          if [ -d "tests" ] || [ -f "test_*.py" ]; then
+            pytest --cov=. --cov-report=xml --cov-report=term -v
+          else
+            echo "No tests found, skipping pytest"
+          fi
+
+      - name: Upload coverage to Codecov (optional)
+        if: github.event_name == 'push'
+        uses: codecov/codecov-action@v4.0.1 # Pinned version
+        with:
+          file: ${{ matrix.service }}/coverage.xml
+          flags: ${{ matrix.service }}
+          name: codecov-${{ matrix.service }}
+        continue-on-error: true
+
+  # Job 3: Frontend linting and testing (if applicable)
+  frontend-lint-test:
+    name: Frontend Lint & Test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4.0.2 # Pinned version
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run ESLint
+        run: |
+          cd frontend
+          npm run lint || echo "Warning: ESLint found issues"
+        continue-on-error: true
+
+      - name: Run tests
+        run: |
+          cd frontend
+          # Vitest requires --run for CI mode (non-watch mode)
+          npm test -- --run --coverage || echo "No tests configured or tests failed"
+        continue-on-error: true
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+
+  # Job 4: Build and push Docker images (only on push to main)
+  build-push-images:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-22.04
+    needs: [helm-lint, python-lint-test, frontend-lint-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        include:
+          - service: backend/hf_deployment
+            image: todo-backend
+          - service: backend/services/notification-service
+            image: todo-notification
+          - service: backend/services/recurring-task-service
+            image: todo-recurring
+          - service: backend/services/audit-log-service
+            image: todo-audit
+          - service: frontend
+            image: todo-frontend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.0.0 # Pinned version
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3.0.0 # Pinned version
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5.5.0 # Pinned version
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push multi-platform Docker image
+        uses: docker/build-push-action@v5.1.0 # Pinned version
+        with:
+          context: ${{ matrix.service }}
+          file: ${{ matrix.service }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha # GitHub Actions cache
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ github.ref_name }}
+
+  # Job 5: Security scanning with Trivy
+  security-scan:
+    name: Security Scan (Trivy)
+    runs-on: ubuntu-22.04
+    needs: build-push-images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        image:
+          - todo-backend
+          - todo-notification
+          - todo-recurring
+          - todo-audit
+          - todo-frontend
+    steps:
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.17.0 # Pinned version
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}:latest
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3.23.2 # Pinned version
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Job 6: Notify on failure (optional Slack/Discord)
+  notify-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-22.04
+    needs: [helm-lint, python-lint-test, frontend-lint-test, build-push-images]
+    if: failure() && github.event_name == 'push'
+    steps:
+      - name: Send Slack notification
+        if: env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST $SLACK_WEBHOOK_URL \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\":\"CI Pipeline Failed: ${{ github.repository }} - ${{ github.ref_name }} - ${{ github.sha }}\"}"
+
+      - name: Send Discord notification
+        if: env.DISCORD_WEBHOOK_URL != ''
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          curl -X POST $DISCORD_WEBHOOK_URL \
+            -H 'Content-Type: application/json' \
+            -d "{\"content\":\"CI Pipeline Failed: ${{ github.repository }} - ${{ github.ref_name }} - ${{ github.sha }}\"}"

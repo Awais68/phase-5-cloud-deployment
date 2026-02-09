@@ -1,0 +1,428 @@
+# Kafka and Event-Driven Architecture Alert Rules
+# Monitors Kafka/Dapr pub-sub performance and reliability
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: todo-app-kafka-alerts
+  namespace: monitoring
+  labels:
+    app: todo-app
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+
+  # ==========================================
+  # Kafka Consumer Lag Alerts
+  # ==========================================
+  - name: kafka-consumer-lag
+    interval: 30s
+    rules:
+
+    # High Consumer Lag
+    - alert: HighKafkaConsumerLag
+      expr: |
+        kafka_consumergroup_lag > 1000
+      for: 10m
+      labels:
+        severity: warning
+        component: kafka
+        alert_type: throughput
+      annotations:
+        summary: "High Kafka consumer lag in {{ $labels.consumergroup }}: {{ $value }} messages"
+        description: |
+          Consumer group {{ $labels.consumergroup }} has a lag of {{ $value }} messages on topic {{ $labels.topic }}.
+
+          Consumer Group: {{ $labels.consumergroup }}
+          Topic: {{ $labels.topic }}
+          Partition: {{ $labels.partition }}
+          Lag: {{ $value }} messages
+
+          This may indicate slow consumer processing or high message production rate.
+
+          Runbook: https://docs.internal/runbooks/kafka-consumer-lag
+        dashboard: "https://grafana.local/d/kafka-metrics"
+        runbook_url: "https://docs.internal/runbooks/kafka-consumer-lag"
+
+    # Critical Consumer Lag
+    - alert: CriticalKafkaConsumerLag
+      expr: |
+        kafka_consumergroup_lag > 10000
+      for: 5m
+      labels:
+        severity: critical
+        component: kafka
+        alert_type: throughput
+      annotations:
+        summary: "CRITICAL Kafka consumer lag in {{ $labels.consumergroup }}: {{ $value }} messages"
+        description: |
+          Consumer group {{ $labels.consumergroup }} has CRITICAL lag of {{ $value }} messages.
+
+          Consumer Group: {{ $labels.consumergroup }}
+          Topic: {{ $labels.topic }}
+          Lag: {{ $value }} messages
+
+          Immediate action required:
+          1. Check consumer health
+          2. Scale consumer instances
+          3. Investigate processing bottlenecks
+
+          Runbook: https://docs.internal/runbooks/kafka-critical-lag
+
+    # Consumer Lag Increasing
+    - alert: KafkaConsumerLagIncreasing
+      expr: |
+        rate(kafka_consumergroup_lag[5m]) > 10
+      for: 10m
+      labels:
+        severity: warning
+        component: kafka
+        alert_type: trend
+      annotations:
+        summary: "Kafka consumer lag increasing for {{ $labels.consumergroup }}"
+        description: |
+          Consumer group {{ $labels.consumergroup }} lag is increasing at {{ $value }} messages/second.
+
+          Consumer Group: {{ $labels.consumergroup }}
+          Topic: {{ $labels.topic }}
+
+          The consumer is not keeping up with message production.
+
+  # ==========================================
+  # Event Publishing Alerts
+  # ==========================================
+  - name: event-publishing
+    interval: 30s
+    rules:
+
+    # High Event Publish Failure Rate
+    - alert: HighEventPublishFailureRate
+      expr: |
+        (
+          sum(rate(kafka_events_published_total{status="failed"}[5m])) by (topic, service)
+          /
+          sum(rate(kafka_events_published_total[5m])) by (topic, service)
+        ) > 0.05
+      for: 5m
+      labels:
+        severity: critical
+        component: kafka
+        alert_type: reliability
+      annotations:
+        summary: "High event publish failure rate on {{ $labels.topic }}: {{ $value | humanizePercentage }}"
+        description: |
+          Service {{ $labels.service }} is failing to publish events to topic {{ $labels.topic }} at {{ $value | humanizePercentage }}.
+
+          Service: {{ $labels.service }}
+          Topic: {{ $labels.topic }}
+          Failure Rate: {{ $value | humanizePercentage }}
+
+          Check Kafka broker connectivity and service health.
+
+          Runbook: https://docs.internal/runbooks/event-publish-failure
+
+    # Event Publishing Latency
+    - alert: HighEventPublishLatency
+      expr: |
+        histogram_quantile(0.95,
+          sum(rate(kafka_event_publish_duration_seconds_bucket[5m])) by (le, topic, service)
+        ) > 1.0
+      for: 10m
+      labels:
+        severity: warning
+        component: kafka
+        alert_type: performance
+      annotations:
+        summary: "High event publishing latency on {{ $labels.topic }}: {{ $value }}s"
+        description: |
+          Service {{ $labels.service }} is experiencing high latency publishing to {{ $labels.topic }}.
+
+          Service: {{ $labels.service }}
+          Topic: {{ $labels.topic }}
+          P95 Latency: {{ $value | humanizeDuration }}
+
+          Check Kafka broker health and network connectivity.
+
+    # Low Event Publishing Rate (potential issue)
+    - alert: LowEventPublishingRate
+      expr: |
+        sum(rate(kafka_events_published_total[5m])) by (topic, service) < 0.01
+      for: 15m
+      labels:
+        severity: warning
+        component: kafka
+        alert_type: traffic
+      annotations:
+        summary: "Low event publishing rate on {{ $labels.topic }} from {{ $labels.service }}"
+        description: |
+          Service {{ $labels.service }} is publishing very few events to {{ $labels.topic }}.
+
+          Service: {{ $labels.service }}
+          Topic: {{ $labels.topic }}
+          Current Rate: {{ $value }} events/s
+
+          This may indicate a service issue or unexpected behavior.
+
+  # ==========================================
+  # Event Consumption Alerts
+  # ==========================================
+  - name: event-consumption
+    interval: 30s
+    rules:
+
+    # High Event Processing Failure Rate
+    - alert: HighEventProcessingFailureRate
+      expr: |
+        (
+          sum(rate(kafka_events_consumed_total{status="failed"}[5m])) by (topic, consumer_group)
+          /
+          sum(rate(kafka_events_consumed_total[5m])) by (topic, consumer_group)
+        ) > 0.05
+      for: 5m
+      labels:
+        severity: critical
+        component: kafka
+        alert_type: reliability
+      annotations:
+        summary: "High event processing failure rate: {{ $value | humanizePercentage }}"
+        description: |
+          Consumer group {{ $labels.consumer_group }} is failing to process events from {{ $labels.topic }} at {{ $value | humanizePercentage }}.
+
+          Consumer Group: {{ $labels.consumer_group }}
+          Topic: {{ $labels.topic }}
+          Failure Rate: {{ $value | humanizePercentage }}
+
+          Check consumer logs and processing logic.
+
+          Runbook: https://docs.internal/runbooks/event-processing-failure
+
+    # Event Processing Latency
+    - alert: HighEventProcessingLatency
+      expr: |
+        histogram_quantile(0.95,
+          sum(rate(kafka_event_processing_duration_seconds_bucket[5m])) by (le, topic, consumer_group)
+        ) > 2.0
+      for: 10m
+      labels:
+        severity: warning
+        component: kafka
+        alert_type: performance
+      annotations:
+        summary: "High event processing latency: {{ $value }}s"
+        description: |
+          Consumer group {{ $labels.consumer_group }} is taking {{ $value | humanizeDuration }} to process events from {{ $labels.topic }}.
+
+          Consumer Group: {{ $labels.consumer_group }}
+          Topic: {{ $labels.topic }}
+          P95 Latency: {{ $value | humanizeDuration }}
+
+          Check consumer processing logic and dependencies.
+
+    # Consumer Group Not Consuming
+    - alert: KafkaConsumerNotConsuming
+      expr: |
+        rate(kafka_events_consumed_total[5m]) == 0
+        and
+        kafka_consumergroup_lag > 0
+      for: 10m
+      labels:
+        severity: critical
+        component: kafka
+        alert_type: availability
+      annotations:
+        summary: "Kafka consumer {{ $labels.consumer_group }} is not consuming messages"
+        description: |
+          Consumer group {{ $labels.consumer_group }} has lag but is not consuming messages from {{ $labels.topic }}.
+
+          Consumer Group: {{ $labels.consumer_group }}
+          Topic: {{ $labels.topic }}
+          Lag: {{ $value }} messages
+
+          The consumer may be stuck, crashed, or experiencing errors.
+
+          Immediate investigation required!
+
+          Runbook: https://docs.internal/runbooks/consumer-not-consuming
+
+  # ==========================================
+  # Dapr Pub/Sub Alerts
+  # ==========================================
+  - name: dapr-pubsub
+    interval: 30s
+    rules:
+
+    # Dapr Pub/Sub Component Unavailable
+    - alert: DaprPubSubUnavailable
+      expr: |
+        dapr_component_loaded{component_name=~".*pubsub.*"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: dapr
+        alert_type: availability
+      annotations:
+        summary: "Dapr pub/sub component {{ $labels.component_name }} is unavailable"
+        description: |
+          Dapr pub/sub component {{ $labels.component_name }} failed to load in app {{ $labels.app }}.
+
+          App: {{ $labels.app }}
+          Component: {{ $labels.component_name }}
+
+          Event-driven communication is broken!
+
+          Runbook: https://docs.internal/runbooks/dapr-component-failure
+
+    # High Dapr Publish Latency
+    - alert: HighDaprPublishLatency
+      expr: |
+        histogram_quantile(0.95,
+          sum(rate(dapr_http_server_latency_bucket{method="v1.0/publish"}[5m])) by (le, app)
+        ) > 500
+      for: 10m
+      labels:
+        severity: warning
+        component: dapr
+        alert_type: performance
+      annotations:
+        summary: "High Dapr publish latency in {{ $labels.app }}: {{ $value }}ms"
+        description: |
+          App {{ $labels.app }} is experiencing high latency when publishing via Dapr.
+
+          App: {{ $labels.app }}
+          P95 Latency: {{ $value }}ms
+
+          Check Dapr sidecar health and Kafka broker connectivity.
+
+  # ==========================================
+  # Topic-Specific Business Logic Alerts
+  # ==========================================
+  - name: business-event-alerts
+    interval: 30s
+    rules:
+
+    # Task Created Events Not Being Processed
+    - alert: TaskCreatedEventsNotProcessed
+      expr: |
+        kafka_consumergroup_lag{topic="task.created"} > 100
+      for: 10m
+      labels:
+        severity: warning
+        component: recurring-task
+        alert_type: business
+      annotations:
+        summary: "Task created events are not being processed: {{ $value }} messages lagging"
+        description: |
+          The recurring task service has {{ $value }} unprocessed task.created events.
+
+          This may delay recurring task generation.
+
+          Check recurring-task service health.
+
+    # Notification Events Stuck
+    - alert: NotificationEventsStuck
+      expr: |
+        kafka_consumergroup_lag{topic=~"notification.*"} > 500
+      for: 10m
+      labels:
+        severity: warning
+        component: notification
+        alert_type: business
+      annotations:
+        summary: "Notification events stuck: {{ $value }} messages lagging"
+        description: |
+          The notification service has {{ $value }} unprocessed events on {{ $labels.topic }}.
+
+          Users may experience delayed notifications.
+
+          Check notification service health and external API connectivity.
+
+    # Audit Events Lag (Compliance Risk)
+    - alert: AuditEventsLagging
+      expr: |
+        kafka_consumergroup_lag{topic="audit.log"} > 100
+      for: 5m
+      labels:
+        severity: critical
+        component: audit-log
+        alert_type: compliance
+      annotations:
+        summary: "Audit events are lagging: {{ $value }} messages"
+        description: |
+          The audit log service has {{ $value }} unprocessed audit events.
+
+          This is a COMPLIANCE RISK - audit logs must be processed in near real-time.
+
+          Immediate investigation required!
+
+          Runbook: https://docs.internal/runbooks/audit-lag
+
+  # ==========================================
+  # Kafka Broker Health (via JMX Exporter)
+  # ==========================================
+  - name: kafka-broker-health
+    interval: 30s
+    rules:
+
+    # Kafka Broker Down
+    - alert: KafkaBrokerDown
+      expr: |
+        kafka_server_brokertopicmetrics_messagesinpersec{job="kafka"} == 0
+      for: 5m
+      labels:
+        severity: critical
+        component: kafka
+        alert_type: availability
+      annotations:
+        summary: "Kafka broker {{ $labels.instance }} is down or not receiving messages"
+        description: |
+          Kafka broker {{ $labels.instance }} appears to be down or is not receiving messages.
+
+          Broker: {{ $labels.instance }}
+
+          This will impact all event-driven services!
+
+          Immediate action required!
+
+    # Under-Replicated Partitions
+    - alert: KafkaUnderReplicatedPartitions
+      expr: |
+        kafka_server_replicamanager_underreplicatedpartitions > 0
+      for: 10m
+      labels:
+        severity: warning
+        component: kafka
+        alert_type: reliability
+      annotations:
+        summary: "Kafka has {{ $value }} under-replicated partitions"
+        description: |
+          Kafka cluster has {{ $value }} under-replicated partitions on broker {{ $labels.instance }}.
+
+          Broker: {{ $labels.instance }}
+          Under-replicated: {{ $value }}
+
+          This increases risk of data loss if a broker fails.
+
+          Check broker health and replication status.
+
+    # Offline Partitions
+    - alert: KafkaOfflinePartitions
+      expr: |
+        kafka_controller_kafkacontroller_offlinepartitionscount > 0
+      for: 1m
+      labels:
+        severity: critical
+        component: kafka
+        alert_type: availability
+      annotations:
+        summary: "Kafka has {{ $value }} offline partitions"
+        description: |
+          Kafka cluster has {{ $value }} offline partitions!
+
+          Offline Partitions: {{ $value }}
+
+          These partitions are unavailable for reads and writes!
+
+          CRITICAL: Immediate investigation required!
+
+          Runbook: https://docs.internal/runbooks/kafka-offline-partitions

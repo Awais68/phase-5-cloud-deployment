@@ -16,39 +16,41 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+imagePullPolicy: IfNotPresent  # For local development with minikube
+
 services:
   frontend:
     type: ClusterIP
-    port: 3000
-    image: "localhost:5000/nextjs-frontend:latest"
+    port: 80
+    image: "nginx:alpine"  # Placeholder until frontend is built
     resources:
       requests: { cpu: "100m", memory: "128Mi" }
       limits: { cpu: "500m", memory: "512Mi" }
   backend:
     type: ClusterIP
-    port: 8000
-    image: "localhost:5000/fastapi-backend:latest"
+    port: 7860
+    image: "todo-backend:dev"
     resources:
       requests: { cpu: "250m", memory: "256Mi" }
       limits: { cpu: "1000m", memory: "1Gi" }
   notification:
     type: ClusterIP
-    port: 8000
-    image: "localhost:5000/notification-service:latest"
+    port: 8003
+    image: "notification-service:dev"
     resources:
       requests: { cpu: "100m", memory: "128Mi" }
       limits: { cpu: "500m", memory: "512Mi" }
   recurring:
     type: ClusterIP
-    port: 8000
-    image: "localhost:5000/recurring-task-service:latest"
+    port: 8002
+    image: "recurring-task-service:dev"
     resources:
       requests: { cpu: "100m", memory: "128Mi" }
       limits: { cpu: "500m", memory: "512Mi" }
   audit:
     type: ClusterIP
-    port: 8000
-    image: "localhost:5000/audit-log-service:latest"
+    port: 8004
+    image: "audit-log-service:dev"
     resources:
       requests: { cpu: "100m", memory: "128Mi" }
       limits: { cpu: "500m", memory: "512Mi" }
@@ -59,9 +61,9 @@ dapr:
 autoscaling:
   enabled: false  # Minikube pe off (resources kam)
 
-# Monitoring configuration
+# Monitoring configuration (disabled for Minikube - requires Prometheus Operator CRDs)
 monitoring:
-  enabled: true
+  enabled: false
 
 # Disable Bitnami dependencies for Minikube (use external or Strimzi)
 postgresql:

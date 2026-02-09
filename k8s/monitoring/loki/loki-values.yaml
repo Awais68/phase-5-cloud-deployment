@@ -1,0 +1,417 @@
+# Loki Stack Helm Values
+# Provides centralized log aggregation for all microservices
+# Compatible with Minikube and scales to OKE production deployments
+
+loki:
+  enabled: true
+
+  # Authentication configuration (disabled for internal use)
+  auth_enabled: false
+
+  # Common configuration for all Loki components
+  commonConfig:
+    # Path prefix for API and UI endpoints
+    path_prefix: /loki
+
+    # Storage configuration
+    replication_factor: 1
+
+    # Ring configuration for distributed mode
+    ring:
+      kvstore:
+        store: inmemory
+
+  # Loki server configuration
+  server:
+    http_listen_port: 3100
+    grpc_listen_port: 9096
+
+    # Request timeouts
+    http_server_read_timeout: 600s
+    http_server_write_timeout: 600s
+
+    # Log level
+    log_level: info
+
+  # Ingester configuration (processes and stores logs)
+  ingester:
+    # Chunk configuration
+    chunk_idle_period: 1h
+    chunk_block_size: 262144
+    chunk_retain_period: 1m
+    max_chunk_age: 1h
+
+    # Lifecycle configuration
+    lifecycler:
+      ring:
+        kvstore:
+          store: inmemory
+        replication_factor: 1
+
+    # Maximum transfer retries
+    max_transfer_retries: 0
+
+    # WAL (Write-Ahead Log) configuration
+    wal:
+      enabled: true
+      dir: /loki/wal
+      flush_on_shutdown: true
+      replay_memory_ceiling: 4GB
+
+  # Storage schema configuration
+  schema_config:
+    configs:
+    - from: 2024-01-01
+      store: boltdb-shipper
+      object_store: filesystem
+      schema: v11
+      index:
+        prefix: index_
+        period: 24h
+
+  # Storage configuration
+  storage_config:
+    boltdb_shipper:
+      active_index_directory: /loki/boltdb-shipper-active
+      cache_location: /loki/boltdb-shipper-cache
+      cache_ttl: 24h
+      shared_store: filesystem
+
+    filesystem:
+      directory: /loki/chunks
+
+  # Compactor configuration (manages index and chunks)
+  compactor:
+    working_directory: /loki/compactor
+    shared_store: filesystem
+    compaction_interval: 10m
+    retention_enabled: true
+    retention_delete_delay: 2h
+    retention_delete_worker_count: 150
+
+  # Limits configuration
+  limits_config:
+    # Ingestion limits
+    ingestion_rate_mb: 10
+    ingestion_burst_size_mb: 20
+
+    # Query limits
+    max_query_length: 721h  # 30 days
+    max_query_parallelism: 32
+    max_query_series: 500
+    max_streams_per_user: 0  # unlimited
+    max_global_streams_per_user: 0  # unlimited
+
+    # Retention (logs older than this are deleted)
+    retention_period: 168h  # 7 days
+
+    # Per-stream rate limits
+    per_stream_rate_limit: 3MB
+    per_stream_rate_limit_burst: 15MB
+
+    # Chunk limits
+    max_chunks_per_query: 2000000
+    max_entries_limit_per_query: 5000
+
+    # Split queries by interval
+    split_queries_by_interval: 15m
+
+  # Chunk cache configuration
+  chunk_store_config:
+    max_look_back_period: 0s
+    chunk_cache_config:
+      enable_fifocache: true
+      fifocache:
+        max_size_bytes: 1GB
+        validity: 1h
+
+  # Query scheduler configuration
+  query_scheduler:
+    max_outstanding_requests_per_tenant: 256
+
+  # Frontend worker configuration
+  frontend_worker:
+    frontend_address: loki-query-frontend:9095
+    parallelism: 10
+
+  # Ruler configuration (for alerting)
+  ruler:
+    storage:
+      type: local
+      local:
+        directory: /loki/rules
+    rule_path: /loki/rules-temp
+    alertmanager_url: http://kube-prometheus-kube-prome-alertmanager:9093
+    ring:
+      kvstore:
+        store: inmemory
+    enable_api: true
+
+  # Table manager configuration
+  table_manager:
+    retention_deletes_enabled: true
+    retention_period: 168h  # 7 days
+
+# Loki deployment configuration
+loki-stack:
+  loki:
+    # Persistence configuration
+    persistence:
+      enabled: true
+      storageClassName: ""  # Use default storage class
+      accessModes:
+      - ReadWriteOnce
+      size: 10Gi
+
+    # Resource limits for Minikube (increase for OKE)
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+    # Service configuration
+    service:
+      type: ClusterIP
+      port: 3100
+      annotations: {}
+
+    # Liveness and readiness probes
+    livenessProbe:
+      httpGet:
+        path: /ready
+        port: 3100
+      initialDelaySeconds: 45
+      periodSeconds: 10
+      timeoutSeconds: 1
+      successThreshold: 1
+      failureThreshold: 3
+
+    readinessProbe:
+      httpGet:
+        path: /ready
+        port: 3100
+      initialDelaySeconds: 45
+      periodSeconds: 10
+      timeoutSeconds: 1
+      successThreshold: 1
+      failureThreshold: 3
+
+  # Promtail configuration (log collector)
+  promtail:
+    enabled: true
+
+    # Promtail configuration
+    config:
+      # Server configuration
+      server:
+        http_listen_port: 9080
+        grpc_listen_port: 0
+
+      # Loki client configuration
+      clients:
+      - url: http://loki:3100/loki/api/v1/push
+        tenant_id: ""
+        batchwait: 1s
+        batchsize: 102400
+
+        # External labels
+        external_labels:
+          cluster: minikube
+          environment: development
+
+      # Positions configuration (tracks log positions)
+      positions:
+        filename: /run/promtail/positions.yaml
+
+      # Target configuration (what to scrape)
+      target_config:
+        sync_period: 10s
+
+      # Scrape configurations
+      scrape_configs:
+      # Kubernetes pods
+      - job_name: kubernetes-pods
+        pipeline_stages:
+        - cri: {}
+        - json:
+            expressions:
+              timestamp: timestamp
+              level: level
+              message: message
+              service: service
+              correlation_id: correlation_id
+              user_id: user_id
+              endpoint: endpoint
+              method: method
+              status: status
+              duration: duration
+        - labels:
+            level:
+            service:
+            correlation_id:
+        - timestamp:
+            source: timestamp
+            format: RFC3339Nano
+        - output:
+            source: message
+
+        kubernetes_sd_configs:
+        - role: pod
+
+        relabel_configs:
+        # Only scrape running pods
+        - source_labels:
+          - __meta_kubernetes_pod_phase
+          action: keep
+          regex: Running
+
+        # Include namespace
+        - source_labels:
+          - __meta_kubernetes_namespace
+          target_label: namespace
+
+        # Include pod name
+        - source_labels:
+          - __meta_kubernetes_pod_name
+          target_label: pod
+
+        # Include container name
+        - source_labels:
+          - __meta_kubernetes_pod_container_name
+          target_label: container
+
+        # Include app label
+        - source_labels:
+          - __meta_kubernetes_pod_label_app
+          target_label: app
+          action: replace
+
+        # Include service label
+        - source_labels:
+          - __meta_kubernetes_pod_label_service
+          target_label: service
+          action: replace
+
+        # Include pod node name
+        - source_labels:
+          - __meta_kubernetes_pod_node_name
+          target_label: node
+
+        # Include pod UID
+        - source_labels:
+          - __meta_kubernetes_pod_uid
+          target_label: pod_uid
+
+        # Set path to container logs
+        - source_labels:
+          - __meta_kubernetes_pod_uid
+          - __meta_kubernetes_pod_container_name
+          target_label: __path__
+          regex: (.+);(.+)
+          replacement: /var/log/pods/*$1*/*$2/*.log
+
+      # Kubernetes events
+      - job_name: kubernetes-events
+        kubernetes_sd_configs:
+        - role: pod
+
+        relabel_configs:
+        - source_labels:
+          - __meta_kubernetes_namespace
+          target_label: namespace
+
+        - source_labels:
+          - __meta_kubernetes_pod_name
+          target_label: pod
+
+        - source_labels:
+          - __meta_kubernetes_pod_label_component
+          regex: kube-apiserver
+          action: keep
+
+        - source_labels:
+          - __meta_kubernetes_pod_container_name
+          target_label: container
+
+    # Resource limits for Promtail
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+    # DaemonSet configuration (runs on every node)
+    daemonset:
+      enabled: true
+
+    # Service configuration
+    service:
+      enabled: true
+      type: ClusterIP
+      port: 9080
+
+    # ServiceMonitor for Prometheus
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+      labels:
+        release: kube-prometheus
+
+    # Volume mounts for log access
+    volumeMounts:
+    - name: run
+      mountPath: /run/promtail
+    - name: containers
+      mountPath: /var/lib/docker/containers
+      readOnly: true
+    - name: pods
+      mountPath: /var/log/pods
+      readOnly: true
+
+    volumes:
+    - name: run
+      hostPath:
+        path: /run/promtail
+    - name: containers
+      hostPath:
+        path: /var/lib/docker/containers
+    - name: pods
+      hostPath:
+        path: /var/log/pods
+
+  # Grafana configuration (datasource already configured in main monitoring stack)
+  grafana:
+    enabled: false
+
+# Additional configurations for production (OKE)
+# Uncomment and adjust for production deployment
+production:
+  enabled: false
+
+  # High availability configuration
+  # replicas: 3
+
+  # Production storage
+  # storage:
+  #   type: s3
+  #   s3:
+  #     bucketnames: loki-chunks
+  #     region: us-phoenix-1
+  #     endpoint: https://objectstorage.us-phoenix-1.oraclecloud.com
+
+  # Production resources
+  # resources:
+  #   requests:
+  #     cpu: 500m
+  #     memory: 2Gi
+  #   limits:
+  #     cpu: 2000m
+  #     memory: 4Gi
+
+  # Production retention
+  # retention_period: 720h  # 30 days

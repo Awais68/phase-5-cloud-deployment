@@ -1,0 +1,404 @@
+# Jaeger Distributed Tracing Helm Values
+# Production-ready configuration for Minikube with OKE scalability
+# Supports OpenTelemetry ingestion and Jaeger native formats
+
+# Deployment strategy
+# - allInOne: Single component (dev/testing) - CURRENT
+# - production: Separate components (collector, query, ingester, agent)
+strategy: allInOne
+
+# All-in-One deployment configuration (Minikube/Development)
+allInOne:
+  enabled: true
+
+  # Image configuration
+  image:
+    repository: jaegertracing/all-in-one
+    tag: 1.53.0
+    pullPolicy: IfNotPresent
+
+  # Number of replicas (1 for development)
+  replicaCount: 1
+
+  # Pod annotations
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "14269"
+    prometheus.io/path: "/metrics"
+
+  # Service account
+  serviceAccount:
+    create: true
+    name: jaeger
+
+  # Security context
+  securityContext:
+    runAsUser: 1000
+    runAsNonRoot: true
+    fsGroup: 1000
+
+  # Container security context
+  containerSecurityContext:
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: false
+    allowPrivilegeEscalation: false
+
+  # Resources (optimized for Minikube)
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+  # Node selector
+  nodeSelector: {}
+
+  # Tolerations
+  tolerations: []
+
+  # Affinity
+  affinity: {}
+
+  # Priority class
+  priorityClassName: ""
+
+  # Storage configuration
+  storage:
+    # Storage type: memory, badger, cassandra, elasticsearch
+    type: memory
+
+    # Memory storage configuration (for development)
+    memory:
+      # Maximum number of traces in memory
+      maxTraces: 10000
+
+    # Badger storage configuration (for persistence)
+    # Uncomment for local persistent storage
+    # type: badger
+    # badger:
+    #   ephemeral: false
+    #   persistence:
+    #     enabled: true
+    #     storageClass: ""
+    #     accessMode: ReadWriteOnce
+    #     size: 5Gi
+
+  # Ingestion configuration
+  ingestion:
+    # Enable OpenTelemetry collector
+    opentelemetry:
+      enabled: true
+
+    # Kafka ingestion (for high-throughput scenarios)
+    kafka:
+      enabled: false
+
+  # Sampling configuration
+  sampling:
+    # Sampling strategies
+    strategies: |
+      {
+        "default_strategy": {
+          "type": "probabilistic",
+          "param": 1.0
+        },
+        "service_strategies": [
+          {
+            "service": "backend",
+            "type": "probabilistic",
+            "param": 1.0
+          },
+          {
+            "service": "notification",
+            "type": "probabilistic",
+            "param": 1.0
+          },
+          {
+            "service": "recurring-task",
+            "type": "probabilistic",
+            "param": 1.0
+          },
+          {
+            "service": "audit-log",
+            "type": "probabilistic",
+            "param": 1.0
+          },
+          {
+            "service": "frontend",
+            "type": "probabilistic",
+            "param": 0.5
+          }
+        ]
+      }
+
+  # Query configuration
+  query:
+    # Base path for UI
+    basePath: /
+
+    # GRPC server settings
+    grpc:
+      host: "0.0.0.0"
+      port: 16685
+
+    # HTTP server settings
+    http:
+      host: "0.0.0.0"
+      port: 16686
+
+    # UI configuration
+    ui:
+      # Google Analytics tracking (disabled)
+      ga:
+        enabled: false
+
+      # Dependencies menu (enabled)
+      dependencies:
+        menuEnabled: true
+
+      # Search configuration
+      search:
+        maxLookback: 168h  # 7 days
+
+    # Additional query options
+    additionalHeaders: []
+    healthCheckHTTPPort: 16687
+
+  # Collector configuration
+  collector:
+    # Service type
+    service:
+      type: ClusterIP
+
+      # Ports configuration
+      zipkin:
+        port: 9411
+      grpc:
+        port: 14250
+      http:
+        port: 14268
+      admin:
+        port: 14269
+      otlp:
+        grpc:
+          enabled: true
+          port: 4317
+        http:
+          enabled: true
+          port: 4318
+
+    # Collector configuration
+    config: |
+      receivers:
+        # Jaeger receiver (legacy format)
+        jaeger:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:14250
+            thrift_http:
+              endpoint: 0.0.0.0:14268
+            thrift_compact:
+              endpoint: 0.0.0.0:6831
+            thrift_binary:
+              endpoint: 0.0.0.0:6832
+
+        # Zipkin receiver
+        zipkin:
+          endpoint: 0.0.0.0:9411
+
+        # OpenTelemetry receiver (RECOMMENDED)
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+
+      processors:
+        # Batch processor (improves performance)
+        batch:
+          timeout: 1s
+          send_batch_size: 50
+          send_batch_max_size: 100
+
+        # Memory limiter (prevents OOM)
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+
+        # Resource processor (add/modify resource attributes)
+        resource:
+          attributes:
+          - key: cluster
+            value: minikube
+            action: insert
+          - key: environment
+            value: development
+            action: insert
+
+      exporters:
+        # Jaeger exporter (to storage)
+        jaeger:
+          endpoint: localhost:14250
+          tls:
+            insecure: true
+
+      service:
+        pipelines:
+          traces:
+            receivers: [jaeger, zipkin, otlp]
+            processors: [memory_limiter, batch, resource]
+            exporters: [jaeger]
+
+    # Sampling configuration
+    sampling:
+      param: 1.0
+
+  # Agent configuration
+  agent:
+    # Enable Jaeger agent (UDP receivers)
+    enabled: true
+
+    # Service configuration
+    service:
+      # Compact Thrift protocol (default for most clients)
+      compactPort: 6831
+      # Binary Thrift protocol
+      binaryPort: 6832
+      # Sampling port
+      samplingPort: 5778
+      # Admin/health check port
+      adminPort: 14271
+
+    # Agent configuration
+    config: |
+      reporter:
+        grpc:
+          host-port: localhost:14250
+
+  # Service configuration
+  service:
+    type: ClusterIP
+
+    # Query service ports
+    query:
+      port: 16686
+      grpcPort: 16685
+
+    # Collector service ports
+    collector:
+      zipkinPort: 9411
+      grpcPort: 14250
+      httpPort: 14268
+      otlpGrpcPort: 4317
+      otlpHttpPort: 4318
+
+    # Agent service ports
+    agent:
+      compactPort: 6831
+      binaryPort: 6832
+      samplingPort: 5778
+
+    # Annotations
+    annotations: {}
+
+    # Labels
+    labels: {}
+
+  # Ingress configuration
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/rewrite-target: /
+      nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    hosts:
+    - host: jaeger.local
+      paths:
+      - path: /
+        pathType: Prefix
+    tls: []
+
+# ServiceMonitor for Prometheus
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  labels:
+    release: kube-prometheus
+  annotations: {}
+
+# Production configuration (for OKE deployment)
+# Uncomment and configure for production use
+production:
+  enabled: false
+
+  # Use separate components for high availability
+  # collector:
+  #   enabled: true
+  #   replicaCount: 3
+  #   resources:
+  #     requests:
+  #       cpu: 500m
+  #       memory: 1Gi
+  #     limits:
+  #       cpu: 2000m
+  #       memory: 2Gi
+
+  # query:
+  #   enabled: true
+  #   replicaCount: 2
+  #   resources:
+  #     requests:
+  #       cpu: 200m
+  #       memory: 512Mi
+  #     limits:
+  #       cpu: 1000m
+  #       memory: 1Gi
+
+  # agent:
+  #   enabled: true
+  #   daemonset: true
+  #   resources:
+  #     requests:
+  #       cpu: 50m
+  #       memory: 128Mi
+  #     limits:
+  #       cpu: 200m
+  #       memory: 256Mi
+
+  # # Elasticsearch storage (production)
+  # storage:
+  #   type: elasticsearch
+  #   elasticsearch:
+  #     host: elasticsearch.monitoring.svc.cluster.local
+  #     port: 9200
+  #     scheme: http
+  #     user: ""
+  #     password: ""
+  #     indexPrefix: jaeger
+  #     serverUrls: http://elasticsearch.monitoring.svc.cluster.local:9200
+  #     maxSpanAge: 168h  # 7 days
+  #     numShards: 5
+  #     numReplicas: 1
+
+  # # Kafka ingestion (high-throughput)
+  # kafka:
+  #   enabled: true
+  #   brokers:
+  #   - kafka-broker.kafka.svc.cluster.local:9092
+  #   topic: jaeger-spans
+  #   encoding: protobuf
+
+# Deployment notes:
+# 1. Deploy with: helm install jaeger jaegertracing/jaeger -f jaeger-values.yaml -n monitoring
+# 2. Access UI: kubectl port-forward -n monitoring svc/jaeger-query 16686:16686
+# 3. Configure applications to send traces to:
+#    - OpenTelemetry (RECOMMENDED): jaeger-collector.monitoring.svc.cluster.local:4317 (gRPC) or :4318 (HTTP)
+#    - Jaeger native: jaeger-agent.monitoring.svc.cluster.local:6831 (UDP)
+#    - Zipkin: jaeger-collector.monitoring.svc.cluster.local:9411 (HTTP)
+# 4. For production, switch to separate components and Elasticsearch storage

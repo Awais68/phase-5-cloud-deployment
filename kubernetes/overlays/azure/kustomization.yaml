@@ -1,0 +1,116 @@
+# Azure AKS Kustomize Overlay
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: production
+
+# Base configuration
+resources:
+  - ../../base
+  - azure-secrets.yaml
+  - azure-storage-class.yaml
+  - azure-ingress.yaml
+
+# Common labels
+commonLabels:
+  environment: azure-production
+  cloud-provider: azure
+
+# Common annotations
+commonAnnotations:
+  managed-by: kustomize
+  azure.workload.identity/use: "true"
+
+# Image configuration - Update ACR_NAME with your registry
+images:
+  - name: todo-frontend
+    newName: ${ACR_NAME}.azurecr.io/todo-frontend
+    newTag: latest
+  - name: todo-backend
+    newName: ${ACR_NAME}.azurecr.io/todo-backend
+    newTag: latest
+  - name: notification-service
+    newName: ${ACR_NAME}.azurecr.io/notification-service
+    newTag: latest
+  - name: recurring-task-service
+    newName: ${ACR_NAME}.azurecr.io/recurring-task-service
+    newTag: latest
+  - name: audit-log-service
+    newName: ${ACR_NAME}.azurecr.io/audit-log-service
+    newTag: latest
+
+# ConfigMap generator
+configMapGenerator:
+  - name: azure-config
+    literals:
+      - CLOUD_PROVIDER=azure
+      - AZURE_REGION=${AZURE_REGION}
+      - ENABLE_AZURE_MONITOR=true
+
+# Replica configuration
+replicas:
+  - name: todo-app-frontend
+    count: 3
+  - name: todo-app-backend
+    count: 3
+  - name: todo-app-notification
+    count: 2
+  - name: todo-app-recurring
+    count: 2
+  - name: todo-app-audit
+    count: 2
+
+# Patches for Azure-specific configurations
+patches:
+  # Add Azure Load Balancer annotations to services
+  - target:
+      kind: Service
+      name: todo-app-backend
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          service.beta.kubernetes.io/azure-load-balancer-internal: "false"
+          service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: /health
+
+  # Add resource limits for production
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "250m"
+      - op: add
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "256Mi"
+      - op: add
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "1000m"
+      - op: add
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "1Gi"
+
+  # Add pod anti-affinity for high availability
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/affinity
+        value:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchLabels:
+                      app: todo-app
+                  topologyKey: topology.kubernetes.io/zone
+
+  # Add image pull secrets
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: acr-secret

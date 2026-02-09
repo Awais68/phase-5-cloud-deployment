@@ -1,0 +1,80 @@
+# Azure Storage Classes for AKS
+---
+# Azure Premium SSD Storage Class
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-premium-ssd
+  labels:
+    kubernetes.io/cluster-service: "true"
+provisioner: disk.csi.azure.com
+parameters:
+  skuName: Premium_LRS
+  cachingMode: ReadOnly
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+# Azure Standard SSD Storage Class
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-standard-ssd
+  labels:
+    kubernetes.io/cluster-service: "true"
+provisioner: disk.csi.azure.com
+parameters:
+  skuName: StandardSSD_LRS
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+# Azure Files Storage Class (for ReadWriteMany volumes)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-files-premium
+  labels:
+    kubernetes.io/cluster-service: "true"
+provisioner: file.csi.azure.com
+parameters:
+  skuName: Premium_LRS
+  location: ${AZURE_REGION}
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+mountOptions:
+  - dir_mode=0777
+  - file_mode=0777
+  - uid=1000
+  - gid=1000
+  - mfsymlinks
+  - nobrl
+---
+# PersistentVolumeClaim for PostgreSQL (if using in-cluster)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: production
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: azure-premium-ssd
+  resources:
+    requests:
+      storage: 50Gi
+---
+# PersistentVolumeClaim for Redis (if using in-cluster)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: production
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: azure-standard-ssd
+  resources:
+    requests:
+      storage: 10Gi

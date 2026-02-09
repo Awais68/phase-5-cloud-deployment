@@ -25,6 +25,7 @@ spec:
       containers:
       - name: recurring
         image: {{ .Values.services.recurring.image }}
+        imagePullPolicy: {{ .Values.imagePullPolicy | default "IfNotPresent" }}
         ports:
         - containerPort: {{ .Values.services.recurring.port }}
         resources: {{ .Values.services.recurring.resources | toYaml | nindent 10 }}

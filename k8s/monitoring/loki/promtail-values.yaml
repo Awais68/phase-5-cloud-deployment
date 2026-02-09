@@ -1,0 +1,348 @@
+# Promtail Standalone Configuration
+# Use this if deploying Promtail separately from Loki stack
+
+# Promtail image configuration
+image:
+  repository: grafana/promtail
+  tag: 2.9.3
+  pullPolicy: IfNotPresent
+
+# Deployment type (daemonset runs on every node)
+daemonset:
+  enabled: true
+
+# Pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9080"
+  prometheus.io/path: "/metrics"
+
+# Security context
+podSecurityContext:
+  runAsUser: 0
+  runAsGroup: 0
+  fsGroup: 0
+
+# Container security context
+containerSecurityContext:
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+    - ALL
+  allowPrivilegeEscalation: false
+
+# Service account
+serviceAccount:
+  create: true
+  name: promtail
+  annotations: {}
+
+# RBAC configuration
+rbac:
+  create: true
+  pspEnabled: false
+
+# Resources
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+# Tolerations (allow running on master nodes)
+tolerations:
+- key: node-role.kubernetes.io/master
+  operator: Exists
+  effect: NoSchedule
+- key: node-role.kubernetes.io/control-plane
+  operator: Exists
+  effect: NoSchedule
+
+# Node selector
+nodeSelector: {}
+
+# Affinity
+affinity: {}
+
+# Priority class
+priorityClassName: ""
+
+# Liveness probe
+livenessProbe:
+  httpGet:
+    path: /ready
+    port: http-metrics
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 1
+  successThreshold: 1
+  failureThreshold: 5
+
+# Readiness probe
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http-metrics
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 1
+  successThreshold: 1
+  failureThreshold: 5
+
+# Service
+service:
+  enabled: true
+  type: ClusterIP
+  port: 9080
+  labels: {}
+  annotations: {}
+
+# ServiceMonitor for Prometheus
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  labels:
+    release: kube-prometheus
+  annotations: {}
+
+# Promtail configuration
+config:
+  # Server configuration
+  server:
+    http_listen_port: 9080
+    grpc_listen_port: 0
+    log_level: info
+
+  # Loki client configuration
+  clients:
+  - url: http://loki:3100/loki/api/v1/push
+    tenant_id: ""
+    batchwait: 1s
+    batchsize: 1048576  # 1MB
+    timeout: 10s
+
+    # Backoff configuration
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+    # External labels applied to all logs
+    external_labels:
+      cluster: minikube
+      environment: development
+
+  # Positions configuration (tracks read positions)
+  positions:
+    filename: /run/promtail/positions.yaml
+
+  # Target configuration
+  target_config:
+    sync_period: 10s
+
+  # Scrape configurations
+  scrape_configs:
+  # ==========================================
+  # Kubernetes Pod Logs
+  # ==========================================
+  - job_name: kubernetes-pods
+
+    # Pipeline stages for structured log parsing
+    pipeline_stages:
+
+    # CRI log format parsing
+    - cri: {}
+
+    # JSON parsing for structured logs
+    - json:
+        expressions:
+          timestamp: timestamp
+          level: level
+          message: message
+          service: service
+          correlation_id: correlation_id
+          trace_id: trace_id
+          span_id: span_id
+          user_id: user_id
+          endpoint: endpoint
+          method: method
+          status: status
+          duration_ms: duration_ms
+          error: error
+          stack_trace: stack_trace
+          event_type: event_type
+          topic: topic
+          consumer_group: consumer_group
+          notification_channel: notification_channel
+          task_id: task_id
+
+    # Extract labels from JSON fields
+    - labels:
+        level:
+        service:
+        correlation_id:
+        trace_id:
+        method:
+        endpoint:
+        event_type:
+        notification_channel:
+
+    # Parse timestamp
+    - timestamp:
+        source: timestamp
+        format: RFC3339Nano
+
+    # Set output to message field
+    - output:
+        source: message
+
+    # Kubernetes service discovery
+    kubernetes_sd_configs:
+    - role: pod
+
+    # Relabel configurations
+    relabel_configs:
+    # Only scrape running pods
+    - source_labels:
+      - __meta_kubernetes_pod_phase
+      action: keep
+      regex: Running
+
+    # Skip system namespaces (optional)
+    - source_labels:
+      - __meta_kubernetes_namespace
+      action: drop
+      regex: (kube-system|kube-public|kube-node-lease)
+
+    # Include namespace label
+    - source_labels:
+      - __meta_kubernetes_namespace
+      target_label: namespace
+
+    # Include pod name
+    - source_labels:
+      - __meta_kubernetes_pod_name
+      target_label: pod
+
+    # Include container name
+    - source_labels:
+      - __meta_kubernetes_pod_container_name
+      target_label: container
+
+    # Include app label
+    - source_labels:
+      - __meta_kubernetes_pod_label_app
+      target_label: app
+      action: replace
+
+    # Include service label
+    - source_labels:
+      - __meta_kubernetes_pod_label_service
+      target_label: service
+      action: replace
+
+    # Include version label
+    - source_labels:
+      - __meta_kubernetes_pod_label_version
+      target_label: version
+      action: replace
+
+    # Include pod node
+    - source_labels:
+      - __meta_kubernetes_pod_node_name
+      target_label: node
+
+    # Include pod IP
+    - source_labels:
+      - __meta_kubernetes_pod_ip
+      target_label: pod_ip
+
+    # Set log path
+    - source_labels:
+      - __meta_kubernetes_pod_uid
+      - __meta_kubernetes_pod_container_name
+      target_label: __path__
+      regex: (.+);(.+)
+      replacement: /var/log/pods/*$1*/*$2/*.log
+
+  # ==========================================
+  # Systemd Journal Logs (host-level)
+  # ==========================================
+  - job_name: systemd-journal
+    journal:
+      json: false
+      max_age: 12h
+      path: /var/log/journal
+      labels:
+        job: systemd-journal
+
+    relabel_configs:
+    - source_labels:
+      - __journal__systemd_unit
+      target_label: unit
+
+    - source_labels:
+      - __journal__hostname
+      target_label: hostname
+
+    - source_labels:
+      - __journal_priority
+      target_label: level
+
+# Volume mounts
+volumeMounts:
+- name: run
+  mountPath: /run/promtail
+- name: containers
+  mountPath: /var/lib/docker/containers
+  readOnly: true
+- name: pods
+  mountPath: /var/log/pods
+  readOnly: true
+- name: journal
+  mountPath: /var/log/journal
+  readOnly: true
+
+# Volumes
+volumes:
+- name: run
+  hostPath:
+    path: /run/promtail
+    type: DirectoryOrCreate
+- name: containers
+  hostPath:
+    path: /var/lib/docker/containers
+    type: Directory
+- name: pods
+  hostPath:
+    path: /var/log/pods
+    type: Directory
+- name: journal
+  hostPath:
+    path: /var/log/journal
+    type: Directory
+
+# Extra volumes for custom configurations
+extraVolumes: []
+extraVolumeMounts: []
+
+# Environment variables
+env:
+- name: HOSTNAME
+  valueFrom:
+    fieldRef:
+      fieldPath: spec.nodeName
+
+# Extra environment variables
+extraEnv: []
+
+# Init containers
+initContainers: []
+
+# Extra containers
+extraContainers: []
+
+# Extra args
+extraArgs: []

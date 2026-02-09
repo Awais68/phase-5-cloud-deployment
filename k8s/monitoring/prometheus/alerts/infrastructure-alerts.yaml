@@ -1,0 +1,536 @@
+# Infrastructure-Level Prometheus Alert Rules
+# Monitors Kubernetes pods, nodes, and infrastructure health
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: todo-app-infrastructure-alerts
+  namespace: monitoring
+  labels:
+    app: todo-app
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+
+  # ==========================================
+  # Pod Health Alerts
+  # ==========================================
+  - name: pod-health
+    interval: 30s
+    rules:
+
+    # Pod CrashLooping
+    - alert: PodCrashLooping
+      expr: |
+        rate(kube_pod_container_status_restarts_total{namespace="default"}[15m]) > 0
+      for: 5m
+      labels:
+        severity: critical
+        component: kubernetes
+        alert_type: availability
+      annotations:
+        summary: "Pod {{ $labels.pod }} is crash looping"
+        description: |
+          Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has restarted {{ $value }} times in the last 15 minutes.
+
+          Namespace: {{ $labels.namespace }}
+          Pod: {{ $labels.pod }}
+          Container: {{ $labels.container }}
+
+          Check pod logs: kubectl logs -n {{ $labels.namespace }} {{ $labels.pod }} -c {{ $labels.container }}
+
+          Runbook: https://docs.internal/runbooks/pod-crashloop
+        dashboard: "https://grafana.local/d/service-health"
+        runbook_url: "https://docs.internal/runbooks/pod-crashloop"
+
+    # Pod Not Ready
+    - alert: PodNotReady
+      expr: |
+        kube_pod_status_phase{namespace="default",phase!~"Running|Succeeded"} == 1
+      for: 5m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: availability
+      annotations:
+        summary: "Pod {{ $labels.pod }} is not ready"
+        description: |
+          Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been in {{ $labels.phase }} state for 5 minutes.
+
+          Namespace: {{ $labels.namespace }}
+          Pod: {{ $labels.pod }}
+          Phase: {{ $labels.phase }}
+
+          Check pod status: kubectl describe pod -n {{ $labels.namespace }} {{ $labels.pod }}
+
+    # Pod Pending Too Long
+    - alert: PodPendingTooLong
+      expr: |
+        kube_pod_status_phase{namespace="default",phase="Pending"} == 1
+      for: 10m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: scheduling
+      annotations:
+        summary: "Pod {{ $labels.pod }} stuck in Pending state"
+        description: |
+          Pod {{ $labels.pod }} has been in Pending state for 10 minutes.
+
+          Namespace: {{ $labels.namespace }}
+          Pod: {{ $labels.pod }}
+
+          Common causes:
+          - Insufficient cluster resources (CPU/memory)
+          - Image pull errors
+          - Persistent volume claim issues
+
+          Check: kubectl describe pod -n {{ $labels.namespace }} {{ $labels.pod }}
+
+    # Container OOMKilled
+    - alert: ContainerOOMKilled
+      expr: |
+        kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+      for: 1m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: resources
+      annotations:
+        summary: "Container {{ $labels.container }} was OOMKilled"
+        description: |
+          Container {{ $labels.container }} in pod {{ $labels.pod }} was killed due to out-of-memory.
+
+          Namespace: {{ $labels.namespace }}
+          Pod: {{ $labels.pod }}
+          Container: {{ $labels.container }}
+
+          Action: Increase memory limits or investigate memory leak.
+
+    # Container Waiting Too Long
+    - alert: ContainerWaiting
+      expr: |
+        kube_pod_container_status_waiting_reason{namespace="default"} == 1
+      for: 10m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: availability
+      annotations:
+        summary: "Container {{ $labels.container }} waiting: {{ $labels.reason }}"
+        description: |
+          Container {{ $labels.container }} in pod {{ $labels.pod }} has been waiting for 10 minutes.
+
+          Namespace: {{ $labels.namespace }}
+          Pod: {{ $labels.pod }}
+          Container: {{ $labels.container }}
+          Reason: {{ $labels.reason }}
+
+          Check pod events: kubectl describe pod -n {{ $labels.namespace }} {{ $labels.pod }}
+
+  # ==========================================
+  # Resource Utilization Alerts
+  # ==========================================
+  - name: resource-utilization
+    interval: 30s
+    rules:
+
+    # High CPU Usage
+    - alert: HighCPUUsage
+      expr: |
+        (
+          sum(rate(container_cpu_usage_seconds_total{namespace="default",pod!=""}[5m])) by (pod, namespace)
+          /
+          sum(kube_pod_container_resource_limits{namespace="default",resource="cpu"}) by (pod, namespace)
+        ) > 0.9
+      for: 10m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: resources
+      annotations:
+        summary: "High CPU usage in pod {{ $labels.pod }}: {{ $value | humanizePercentage }}"
+        description: |
+          Pod {{ $labels.pod }} is using {{ $value | humanizePercentage }} of its CPU limit.
+
+          Namespace: {{ $labels.namespace }}
+          Pod: {{ $labels.pod }}
+
+          Consider increasing CPU limits or investigating CPU-intensive operations.
+
+    # High Memory Usage
+    - alert: HighMemoryUsage
+      expr: |
+        (
+          sum(container_memory_working_set_bytes{namespace="default",pod!=""}) by (pod, namespace)
+          /
+          sum(kube_pod_container_resource_limits{namespace="default",resource="memory"}) by (pod, namespace)
+        ) > 0.9
+      for: 5m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: resources
+      annotations:
+        summary: "High memory usage in pod {{ $labels.pod }}: {{ $value | humanizePercentage }}"
+        description: |
+          Pod {{ $labels.pod }} is using {{ $value | humanizePercentage }} of its memory limit.
+
+          Namespace: {{ $labels.namespace }}
+          Pod: {{ $labels.pod }}
+
+          The pod may be at risk of OOMKill. Investigate memory usage patterns.
+
+    # Near Memory Limit
+    - alert: NearMemoryLimit
+      expr: |
+        (
+          sum(container_memory_working_set_bytes{namespace="default",pod!=""}) by (pod, namespace)
+          /
+          sum(kube_pod_container_resource_limits{namespace="default",resource="memory"}) by (pod, namespace)
+        ) > 0.95
+      for: 2m
+      labels:
+        severity: critical
+        component: kubernetes
+        alert_type: resources
+      annotations:
+        summary: "Pod {{ $labels.pod }} near memory limit: {{ $value | humanizePercentage }}"
+        description: |
+          Pod {{ $labels.pod }} is using {{ $value | humanizePercentage }} of its memory limit!
+
+          Namespace: {{ $labels.namespace }}
+          Pod: {{ $labels.pod }}
+
+          CRITICAL: OOMKill imminent. Immediate action required!
+
+    # Pod CPU Throttling
+    - alert: PodCPUThrottling
+      expr: |
+        rate(container_cpu_cfs_throttled_seconds_total{namespace="default"}[5m]) > 0.1
+      for: 10m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: performance
+      annotations:
+        summary: "Pod {{ $labels.pod }} experiencing CPU throttling"
+        description: |
+          Pod {{ $labels.pod }} is being CPU throttled, which may impact performance.
+
+          Namespace: {{ $labels.namespace }}
+          Pod: {{ $labels.pod }}
+
+          Consider increasing CPU limits if consistent throttling occurs.
+
+  # ==========================================
+  # Deployment Health Alerts
+  # ==========================================
+  - name: deployment-health
+    interval: 30s
+    rules:
+
+    # Deployment Replicas Mismatch
+    - alert: DeploymentReplicasMismatch
+      expr: |
+        (
+          kube_deployment_spec_replicas{namespace="default"}
+          !=
+          kube_deployment_status_replicas_available{namespace="default"}
+        )
+      for: 10m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: availability
+      annotations:
+        summary: "Deployment {{ $labels.deployment }} has replica mismatch"
+        description: |
+          Deployment {{ $labels.deployment }} desired replicas do not match available replicas.
+
+          Namespace: {{ $labels.namespace }}
+          Deployment: {{ $labels.deployment }}
+          Desired: {{ $labels.spec_replicas }}
+          Available: {{ $labels.status_replicas_available }}
+
+          Check: kubectl get deployment -n {{ $labels.namespace }} {{ $labels.deployment }}
+
+    # Deployment Rollout Stuck
+    - alert: DeploymentRolloutStuck
+      expr: |
+        kube_deployment_status_condition{condition="Progressing",status="false",namespace="default"} == 1
+      for: 15m
+      labels:
+        severity: critical
+        component: kubernetes
+        alert_type: deployment
+      annotations:
+        summary: "Deployment {{ $labels.deployment }} rollout is stuck"
+        description: |
+          Deployment {{ $labels.deployment }} rollout has been stuck for 15 minutes.
+
+          Namespace: {{ $labels.namespace }}
+          Deployment: {{ $labels.deployment }}
+
+          Check deployment status: kubectl describe deployment -n {{ $labels.namespace }} {{ $labels.deployment }}
+
+          Runbook: https://docs.internal/runbooks/rollout-stuck
+
+    # No Pods Running for Deployment
+    - alert: NoPodsRunning
+      expr: |
+        kube_deployment_status_replicas_available{namespace="default"} == 0
+      for: 5m
+      labels:
+        severity: critical
+        component: kubernetes
+        alert_type: availability
+      annotations:
+        summary: "No pods running for deployment {{ $labels.deployment }}"
+        description: |
+          Deployment {{ $labels.deployment }} has zero available replicas!
+
+          Namespace: {{ $labels.namespace }}
+          Deployment: {{ $labels.deployment }}
+
+          Service is DOWN! Immediate investigation required!
+
+          Check: kubectl get pods -n {{ $labels.namespace }} -l app={{ $labels.deployment }}
+
+  # ==========================================
+  # Storage Alerts
+  # ==========================================
+  - name: storage-alerts
+    interval: 30s
+    rules:
+
+    # PersistentVolume Nearly Full
+    - alert: PersistentVolumeNearlyFull
+      expr: |
+        (
+          kubelet_volume_stats_used_bytes
+          /
+          kubelet_volume_stats_capacity_bytes
+        ) > 0.85
+      for: 10m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: storage
+      annotations:
+        summary: "PersistentVolume {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full"
+        description: |
+          PersistentVolume {{ $labels.persistentvolumeclaim }} in namespace {{ $labels.namespace }} is {{ $value | humanizePercentage }} full.
+
+          Namespace: {{ $labels.namespace }}
+          PVC: {{ $labels.persistentvolumeclaim }}
+          Usage: {{ $value | humanizePercentage }}
+
+          Consider expanding volume or cleaning up data.
+
+    # PersistentVolume Full
+    - alert: PersistentVolumeFull
+      expr: |
+        (
+          kubelet_volume_stats_used_bytes
+          /
+          kubelet_volume_stats_capacity_bytes
+        ) > 0.95
+      for: 5m
+      labels:
+        severity: critical
+        component: kubernetes
+        alert_type: storage
+      annotations:
+        summary: "PersistentVolume {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full"
+        description: |
+          PersistentVolume {{ $labels.persistentvolumeclaim }} is critically full at {{ $value | humanizePercentage }}!
+
+          Namespace: {{ $labels.namespace }}
+          PVC: {{ $labels.persistentvolumeclaim }}
+
+          CRITICAL: Immediate action required to prevent service disruption!
+
+    # PVC Pending
+    - alert: PersistentVolumeClaimPending
+      expr: |
+        kube_persistentvolumeclaim_status_phase{phase="Pending"} == 1
+      for: 10m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: storage
+      annotations:
+        summary: "PVC {{ $labels.persistentvolumeclaim }} stuck in Pending"
+        description: |
+          PersistentVolumeClaim {{ $labels.persistentvolumeclaim }} has been Pending for 10 minutes.
+
+          Namespace: {{ $labels.namespace }}
+          PVC: {{ $labels.persistentvolumeclaim }}
+
+          Check storage class and available persistent volumes.
+
+  # ==========================================
+  # Node Health Alerts
+  # ==========================================
+  - name: node-health
+    interval: 30s
+    rules:
+
+    # Node Not Ready
+    - alert: NodeNotReady
+      expr: |
+        kube_node_status_condition{condition="Ready",status="true"} == 0
+      for: 5m
+      labels:
+        severity: critical
+        component: kubernetes
+        alert_type: node
+      annotations:
+        summary: "Node {{ $labels.node }} is not ready"
+        description: |
+          Node {{ $labels.node }} has been in NotReady state for 5 minutes.
+
+          Node: {{ $labels.node }}
+
+          This will impact pod scheduling and may cause service degradation.
+
+          Check: kubectl describe node {{ $labels.node }}
+
+    # Node High Memory Pressure
+    - alert: NodeMemoryPressure
+      expr: |
+        kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+      for: 5m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: node
+      annotations:
+        summary: "Node {{ $labels.node }} under memory pressure"
+        description: |
+          Node {{ $labels.node }} is experiencing memory pressure.
+
+          Node: {{ $labels.node }}
+
+          Kubernetes may start evicting pods. Check node memory usage.
+
+    # Node High Disk Pressure
+    - alert: NodeDiskPressure
+      expr: |
+        kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+      for: 5m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: node
+      annotations:
+        summary: "Node {{ $labels.node }} under disk pressure"
+        description: |
+          Node {{ $labels.node }} is experiencing disk pressure.
+
+          Node: {{ $labels.node }}
+
+          Kubernetes may start evicting pods. Clean up disk space.
+
+    # Node Filesystem Nearly Full
+    - alert: NodeFilesystemNearlyFull
+      expr: |
+        (
+          node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|fuse.lxcfs"}
+          /
+          node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|fuse.lxcfs"}
+        ) < 0.15
+      for: 10m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: node
+      annotations:
+        summary: "Node {{ $labels.instance }} filesystem nearly full"
+        description: |
+          Node {{ $labels.instance }} has less than 15% disk space remaining.
+
+          Instance: {{ $labels.instance }}
+          Available: {{ $value | humanizePercentage }}
+
+          Clean up disk space to prevent node issues.
+
+  # ==========================================
+  # Service Health Alerts
+  # ==========================================
+  - name: service-health
+    interval: 30s
+    rules:
+
+    # Service Has No Endpoints
+    - alert: ServiceHasNoEndpoints
+      expr: |
+        kube_service_spec_type{namespace="default",type!="ExternalName"} unless on(service, namespace) kube_endpoint_address_available
+      for: 5m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: networking
+      annotations:
+        summary: "Service {{ $labels.service }} has no endpoints"
+        description: |
+          Service {{ $labels.service }} in namespace {{ $labels.namespace }} has no available endpoints.
+
+          Namespace: {{ $labels.namespace }}
+          Service: {{ $labels.service }}
+
+          Traffic to this service will fail. Check pod status and selectors.
+
+          Check: kubectl get endpoints -n {{ $labels.namespace }} {{ $labels.service }}
+
+  # ==========================================
+  # HPA (Horizontal Pod Autoscaler) Alerts
+  # ==========================================
+  - name: hpa-alerts
+    interval: 30s
+    rules:
+
+    # HPA At Max Replicas
+    - alert: HPAAtMaxReplicas
+      expr: |
+        (
+          kube_horizontalpodautoscaler_status_current_replicas{namespace="default"}
+          /
+          kube_horizontalpodautoscaler_spec_max_replicas{namespace="default"}
+        ) >= 1
+      for: 15m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: scaling
+      annotations:
+        summary: "HPA {{ $labels.horizontalpodautoscaler }} at maximum replicas"
+        description: |
+          HorizontalPodAutoscaler {{ $labels.horizontalpodautoscaler }} has been at maximum replicas for 15 minutes.
+
+          Namespace: {{ $labels.namespace }}
+          HPA: {{ $labels.horizontalpodautoscaler }}
+          Current Replicas: {{ $value }}
+
+          Consider increasing max replicas or investigating high load.
+
+    # HPA Unable to Scale
+    - alert: HPAUnableToScale
+      expr: |
+        kube_horizontalpodautoscaler_status_condition{condition="AbleToScale",status="false"} == 1
+      for: 5m
+      labels:
+        severity: warning
+        component: kubernetes
+        alert_type: scaling
+      annotations:
+        summary: "HPA {{ $labels.horizontalpodautoscaler }} unable to scale"
+        description: |
+          HorizontalPodAutoscaler {{ $labels.horizontalpodautoscaler }} is unable to scale.
+
+          Namespace: {{ $labels.namespace }}
+          HPA: {{ $labels.horizontalpodautoscaler }}
+
+          Check HPA status: kubectl describe hpa -n {{ $labels.namespace }} {{ $labels.horizontalpodautoscaler }}

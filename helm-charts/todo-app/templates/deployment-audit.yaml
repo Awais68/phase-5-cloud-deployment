@@ -25,6 +25,7 @@ spec:
       containers:
       - name: audit
         image: {{ .Values.services.audit.image }}
+        imagePullPolicy: {{ .Values.imagePullPolicy | default "IfNotPresent" }}
         ports:
         - containerPort: {{ .Values.services.audit.port }}
         resources: {{ .Values.services.audit.resources | toYaml | nindent 10 }}

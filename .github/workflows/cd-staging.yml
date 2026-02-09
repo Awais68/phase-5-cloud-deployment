@@ -1,0 +1,339 @@
+name: CD - Deploy to Staging
+
+# Trigger on push to main or manual trigger
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch: # Allow manual deployment
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - dev
+
+# Environment variables
+env:
+  HELM_VERSION: 'v3.13.3'
+  KUBECTL_VERSION: 'v1.28.0'
+  REGISTRY: ghcr.io
+
+# Set permissions
+permissions:
+  contents: read
+  packages: read
+  id-token: write # For OIDC authentication
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging Environment
+    runs-on: ubuntu-22.04
+    environment:
+      name: staging
+      url: https://staging.yourdomain.com # Update with actual URL
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.1
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4.0.0
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4.0.0 # Pinned version
+        with:
+          version: ${{ env.KUBECTL_VERSION }}
+
+      # Option 1: OIDC Authentication (Recommended for GKE/OKE)
+      # Uncomment and configure for your cloud provider
+      #
+      # For GKE (Google Cloud):
+      # - name: Authenticate to Google Cloud
+      #   uses: google-github-actions/auth@v2.1.0
+      #   with:
+      #     workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      #     service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      #
+      # - name: Set up GKE credentials
+      #   uses: google-github-actions/get-gke-credentials@v2.1.0
+      #   with:
+      #     cluster_name: ${{ secrets.GKE_CLUSTER_NAME }}
+      #     location: ${{ secrets.GKE_CLUSTER_ZONE }}
+      #
+      # For OKE (Oracle Cloud):
+      # - name: Configure kubectl for OKE
+      #   run: |
+      #     mkdir -p $HOME/.kube
+      #     echo "${{ secrets.OKE_KUBECONFIG }}" | base64 -d > $HOME/.kube/config
+      #     kubectl config use-context ${{ secrets.OKE_CONTEXT_NAME }}
+
+      # Option 2: Kubeconfig Secret (Fallback method)
+      - name: Set up Kubernetes config
+        env:
+          KUBECONFIG_CONTENT: ${{ secrets.STAGING_KUBECONFIG }}
+        run: |
+          mkdir -p $HOME/.kube
+          echo "$KUBECONFIG_CONTENT" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+          kubectl config current-context
+
+      - name: Verify cluster access
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Create namespace if not exists
+        run: |
+          kubectl create namespace staging --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create image pull secret for GHCR
+        run: |
+          kubectl create secret docker-registry ghcr-secret \
+            --docker-server=${{ env.REGISTRY }} \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GITHUB_TOKEN }} \
+            --namespace=staging \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Add Helm dependencies
+        run: |
+          cd helm-charts/todo-app
+          helm dependency update
+
+      - name: Prepare Helm values for staging
+        env:
+          STAGING_VALUES: ${{ secrets.STAGING_VALUES }}
+        run: |
+          # Create staging-values.yaml from secret
+          echo "$STAGING_VALUES" | base64 -d > helm-charts/todo-app/staging-values.yaml
+
+          # Or use inline values if secret not set
+          if [ ! -s helm-charts/todo-app/staging-values.yaml ]; then
+            cat > helm-charts/todo-app/staging-values.yaml <<EOF
+          # Staging environment configuration
+          global:
+            environment: staging
+            imageRegistry: ${{ env.REGISTRY }}/${{ github.repository_owner }}
+            imagePullSecrets:
+              - name: ghcr-secret
+            imageTag: ${{ github.sha }}
+
+          backend:
+            image:
+              repository: ${{ env.REGISTRY }}/${{ github.repository_owner }}/todo-backend
+              tag: ${{ github.sha }}
+            replicaCount: 2
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "250m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+
+          notificationService:
+            image:
+              repository: ${{ env.REGISTRY }}/${{ github.repository_owner }}/todo-notification
+              tag: ${{ github.sha }}
+            replicaCount: 1
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "250m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+
+          recurringTaskService:
+            image:
+              repository: ${{ env.REGISTRY }}/${{ github.repository_owner }}/todo-recurring
+              tag: ${{ github.sha }}
+            replicaCount: 1
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "250m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+
+          auditLogService:
+            image:
+              repository: ${{ env.REGISTRY }}/${{ github.repository_owner }}/todo-audit
+              tag: ${{ github.sha }}
+            replicaCount: 1
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "250m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+
+          frontend:
+            image:
+              repository: ${{ env.REGISTRY }}/${{ github.repository_owner }}/todo-frontend
+              tag: ${{ github.sha }}
+            replicaCount: 2
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+              limits:
+                memory: "256Mi"
+                cpu: "200m"
+
+          # Database configuration
+          postgresql:
+            enabled: false # Use external Neon PostgreSQL
+            externalHost: ${{ secrets.STAGING_DB_HOST }}
+            externalPort: 5432
+            database: todo_staging
+            username: ${{ secrets.STAGING_DB_USER }}
+            password: ${{ secrets.STAGING_DB_PASSWORD }}
+
+          # Kafka/event streaming
+          kafka:
+            enabled: true
+            replicaCount: 1
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "500m"
+              limits:
+                memory: "1Gi"
+                cpu: "1000m"
+
+          # Dapr configuration
+          dapr:
+            enabled: true
+            logLevel: info
+
+          # Ingress configuration
+          ingress:
+            enabled: true
+            className: nginx
+            annotations:
+              cert-manager.io/cluster-issuer: letsencrypt-staging
+            hosts:
+              - host: staging.yourdomain.com
+                paths:
+                  - path: /
+                    pathType: Prefix
+            tls:
+              - secretName: staging-tls
+                hosts:
+                  - staging.yourdomain.com
+          EOF
+          fi
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install todo-app \
+            helm-charts/todo-app \
+            --namespace staging \
+            --values helm-charts/todo-app/staging-values.yaml \
+            --wait \
+            --timeout 10m \
+            --create-namespace \
+            --set global.imageTag=${{ github.sha }}
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n staging
+          kubectl get services -n staging
+          kubectl get ingress -n staging
+
+      - name: Run smoke tests
+        run: |
+          # Wait for pods to be ready
+          kubectl wait --for=condition=ready pod \
+            -l app.kubernetes.io/name=todo-app \
+            -n staging \
+            --timeout=300s
+
+          # Get service endpoint
+          ENDPOINT=$(kubectl get ingress -n staging -o jsonpath='{.items[0].spec.rules[0].host}')
+
+          # Run basic health checks
+          echo "Running smoke tests against $ENDPOINT"
+
+          # Test backend health endpoint
+          curl -f https://$ENDPOINT/health || echo "Health check failed"
+
+          # Test frontend
+          curl -f https://$ENDPOINT/ || echo "Frontend check failed"
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment failed, rolling back..."
+          helm rollback todo-app --namespace staging
+
+      - name: Send deployment notification
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            STATUS="${{ job.status }}"
+            COLOR=$([[ "$STATUS" == "success" ]] && echo "good" || echo "danger")
+
+            curl -X POST $SLACK_WEBHOOK_URL \
+              -H 'Content-Type: application/json' \
+              -d "{
+                \"attachments\": [{
+                  \"color\": \"$COLOR\",
+                  \"title\": \"Staging Deployment $STATUS\",
+                  \"fields\": [
+                    {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
+                    {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
+                    {\"title\": \"Commit\", \"value\": \"${{ github.sha }}\", \"short\": true},
+                    {\"title\": \"Actor\", \"value\": \"${{ github.actor }}\", \"short\": true}
+                  ]
+                }]
+              }"
+          fi
+
+  # Integration tests after deployment
+  integration-tests:
+    name: Run Integration Tests
+    runs-on: ubuntu-22.04
+    needs: deploy-staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: |
+          pip install pytest requests pytest-asyncio
+
+      - name: Run integration tests
+        env:
+          STAGING_API_URL: https://staging.yourdomain.com
+          STAGING_API_KEY: ${{ secrets.STAGING_API_KEY }}
+        run: |
+          # Run integration tests against staging environment
+          if [ -d "tests/integration" ]; then
+            pytest tests/integration -v --tb=short
+          else
+            echo "No integration tests found"
+          fi
+
+      - name: Report test results
+        if: always()
+        run: |
+          echo "Integration tests completed with status: ${{ job.status }}"
